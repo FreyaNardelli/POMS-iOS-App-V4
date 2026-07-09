@@ -22,7 +22,7 @@ struct LiveSensorsView: View {
                 header
                 sourceStrip
                 ZStack(alignment: .bottomTrailing) {
-                    WatchModel3DView(resetToken: resetToken).frame(height: 380) // edit height for model cropping
+                    WatchModel3DView(resetToken: resetToken).frame(height: 190) // edit height for model cropping
                     Button {
                         resetToken += 1
                     } label: {
