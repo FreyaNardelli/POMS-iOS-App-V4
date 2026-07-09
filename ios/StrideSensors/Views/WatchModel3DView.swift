@@ -46,9 +46,9 @@ struct WatchModel3DView: UIViewRepresentable {
             content.addChildNode(child)
         }
         let (minV, maxV) = content.boundingBox
-        content.position = SCNVector3(-(minV.x + maxV.x) / 1, // remove /2 for each
-                                      -(minV.y + maxV.y) / 1,
-                                      -(minV.z + maxV.z) / 1)
+        content.position = SCNVector3(-(minV.x + maxV.x) / 5, // remove /2 for each
+                                      -(minV.y + maxV.y) / 5,
+                                      -(minV.z + maxV.z) / 5)
         base.addChildNode(content)
         pivot.addChildNode(base)
         scene.rootNode.addChildNode(pivot)
