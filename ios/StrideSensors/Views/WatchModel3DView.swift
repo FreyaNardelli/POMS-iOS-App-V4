@@ -39,7 +39,7 @@ struct WatchModel3DView: UIViewRepresentable {
         // sensor-driven rotation on top.
         let pivot = SCNNode()
         let base = SCNNode()
-        base.eulerAngles = SCNVector3(0, 3 * Float.pi / 2, 0)
+        base.eulerAngles = SCNVector3(3 * Float.pi / 2, 3 * Float.pi / 2, 0) // Rotate x +270deg
         let content = SCNNode()
         for child in scene.rootNode.childNodes where child.camera == nil && child.light == nil {
             child.removeFromParentNode()
