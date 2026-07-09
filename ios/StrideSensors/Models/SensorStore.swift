@@ -31,14 +31,43 @@ final class SensorStore: ObservableObject {
     private var arrivals: [Date] = []          // for packets/sec
     private let lock = NSLock()
 
+    // MARK: Gravity removal (per-axis low-pass estimate)
+    //
+    // The watch streams raw accelerometer, which always has ~9.8 m/s² sitting
+    // on whichever axis currently points "down". We track a slow-moving
+    // per-axis estimate of that gravity vector and subtract it out, so
+    // everything published here (`latest`, `history`) is linear acceleration
+    // only — same technique SensorLogStore uses for the CSV log.
+    private var gravity = SIMD3<Double>(0, 0, 0)
+    private var gravityPrimed = false
+    private let gravityAlpha = 0.9   // higher = slower to adapt = more low-frequency content treated as gravity
+
+    private func removeGravity(_ raw: SIMD3<Double>) -> SIMD3<Double> {
+        if gravityPrimed {
+            gravity = gravityAlpha * gravity + (1 - gravityAlpha) * raw
+        } else {
+            gravity = raw
+            gravityPrimed = true
+        }
+        return raw - gravity
+    }
+    
     // MARK: Ingest (called from UDPReceiver.onData, background queue)
 
     func ingest(_ data: Data, receivedAt: Date) {
-        guard let sample = SensorPacketParser.parse(data, receivedAt: receivedAt) else {
+        guard let parsed = SensorPacketParser.parse(data, receivedAt: receivedAt) else {
             return   // malformed / unknown format — ignored
         }
 
         lock.lock()
+        let linearAccel = removeGravity(parsed.accel)
+        let sample = SensorSample(timestamp: parsed.timestamp,
+                                   receivedAt: parsed.receivedAt,
+                                   accel: linearAccel,
+                                   gyro: parsed.gyro,
+                                   heartRate: parsed.heartRate,
+                                   fields: parsed.fields,
+                                   raw: parsed.raw)
         history.append(sample)
         if history.count > maxHistory {
             history.removeFirst(history.count - maxHistory)
