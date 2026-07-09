@@ -21,7 +21,7 @@ struct WatchModel3DView: UIViewRepresentable {
         view.backgroundColor = .clear
         view.antialiasingMode = .multisampling4X
         view.autoenablesDefaultLighting = true
-        view.isUserInteractionEnabled = false
+        view.isUserInteractionEnabled = true // edited, changed from false
         view.rendersContinuously = true
 
         let scene: SCNScene
@@ -60,7 +60,7 @@ struct WatchModel3DView: UIViewRepresentable {
         camera.camera = SCNCamera()
         camera.camera?.zNear = 0.001
         camera.camera?.zFar = Double(radius) * 20
-        camera.position = SCNVector3(0, 0, radius * 2.3)
+        camera.position = SCNVector3(0, 0, radius * 4.6) // SCNVector3(0, 0, radius * 2.3)
         scene.rootNode.addChildNode(camera)
 
         // Soft fill so the PBR materials read on the dark panel.
