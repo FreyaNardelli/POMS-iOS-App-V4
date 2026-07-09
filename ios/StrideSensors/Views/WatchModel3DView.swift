@@ -121,9 +121,9 @@ struct WatchModel3DView: UIViewRepresentable {
 
             if rotating {
                 // Gyro is already rad/s — integrate directly into the rotation.
-                ex += g.z * dt
-                ey -= g.y * dt
-                ez += g.x * dt
+                ex -= g.z * dt // roll
+                ey -= g.y * dt // pitch
+                ez -= g.x * dt // yaw
             } else if !live {
                 ey += 0.35 * dt                    // idle auto-spin when no stream
             }
