@@ -35,7 +35,7 @@ enum SensorPacketParser {
         let core = hasTimestamp ? Array(nums.dropFirst()) : nums
         guard core.count >= 6 else { return nil }   // need at least accel + gyro
         var fields: [String: Double] = [
-            "ax": core[0], "ay": core[1], "az": core[2],
+            "ax": core[2], "ay": (-1 * core[1]), "az": core[0],
             "gx": core[3], "gy": core[4], "gz": core[5]
         ]
         if core.count >= 7 { fields["hr"] = core[6] }
