@@ -1,0 +1,32 @@
+# Codemagic CI (alternative to GitHub Actions) — https://codemagic.io
+# Produces an unsigned .ipa you can sign + install with Sideloadly.
+workflows:
+  stride-unsigned:
+    name: Stride unsigned IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      xcode: latest
+    working_directory: ios/StrideSensors      # <-- change if the app lives at the repo root
+    scripts:
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Generate Xcode project
+        script: xcodegen generate
+      - name: Build unsigned .app
+        script: |
+          xcodebuild \
+            -project StrideSensors.xcodeproj \
+            -scheme StrideSensors \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+      - name: Package unsigned .ipa
+        script: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/StrideSensors.app Payload/
+          zip -r StrideSensors-unsigned.ipa Payload
+    artifacts:
+      - ios/StrideSensors/StrideSensors-unsigned.ipa

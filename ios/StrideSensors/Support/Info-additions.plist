@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Merge these keys into your target's Info.plist (or set them in the target's
+  Info tab). iOS 14+ prompts the user before an app may use the local network;
+  the receiver won't get any packets until that permission is granted, so the
+  usage-description string is REQUIRED.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Stride receives movement, rotation and heart-rate data from your watch over the local Wi-Fi network.</string>
+
+    <!-- Only needed if you later ADVERTISE/BROWSE a Bonjour service for discovery.
+         Plain UDP receive on a fixed port does not require this, but it's handy
+         if the watch discovers the phone by service name. -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_stride._udp</string>
+    </array>
+</dict>
+</plist>

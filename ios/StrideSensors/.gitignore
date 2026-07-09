@@ -1,0 +1,13 @@
+# Xcode / XcodeGen
+StrideSensors.xcodeproj/
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Sideload artifacts
+*.ipa
+Payload/
