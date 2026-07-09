@@ -21,7 +21,7 @@ struct WatchModel3DView: UIViewRepresentable {
         view.backgroundColor = .clear
         view.antialiasingMode = .multisampling4X
         view.autoenablesDefaultLighting = true
-        view.isUserInteractionEnabled = true // edited, changed from false
+        view.isUserInteractionEnabled = false
         view.rendersContinuously = true
 
         let scene: SCNScene
@@ -46,9 +46,9 @@ struct WatchModel3DView: UIViewRepresentable {
             content.addChildNode(child)
         }
         let (minV, maxV) = content.boundingBox
-        content.position = SCNVector3(-(minV.x + maxV.x) / 2,
-                                      -(minV.y + maxV.y) / 2,
-                                      -(minV.z + maxV.z) / 2)
+        content.position = SCNVector3(-(minV.x + maxV.x) / 1, // remove /2 for each
+                                      -(minV.y + maxV.y) / 1,
+                                      -(minV.z + maxV.z) / 1)
         base.addChildNode(content)
         pivot.addChildNode(base)
         scene.rootNode.addChildNode(pivot)
