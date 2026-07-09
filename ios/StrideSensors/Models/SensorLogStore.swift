@@ -54,9 +54,6 @@ final class SensorLogStore: ObservableObject {
     // MARK: Private
     private var current: DayLog
     private var activeSession: Session?
-    private var gravity = SIMD3<Double>(0, 0, 0)
-    private var gravityPrimed = false
-    private let alpha = 0.9                    // gravity low-pass smoothing
     private let lock = NSLock()
     private var dirty = false
     private var persistTimer: Timer?
@@ -96,7 +93,10 @@ final class SensorLogStore: ObservableObject {
     // MARK: Ingest (called from SensorStore.ingest, background queue)
 
     func record(_ sample: SensorSample, receivedAt: Date) {
-        let raw = sample.accel
+        // sample.accel is already gravity-removed (linear acceleration) —
+        // SensorStore.ingest strips gravity once, upstream, before anything
+        // (this log, LiveSensorsView, WatchModel3DView) sees the sample.
+        let lin = sample.accel
         let t = sample.fields["t"] ?? (receivedAt.timeIntervalSince1970 * 1000)
 
         lock.lock()
@@ -106,17 +106,7 @@ final class SensorLogStore: ObservableObject {
         if today != current.day {
             writeToDisk_locked()
             current = DayLog(day: today, freeLiving: [], sessions: [])
-            gravityPrimed = false
         }
-
-        // Gravity estimate → linear acceleration.
-        if gravityPrimed {
-            gravity = alpha * gravity + (1 - alpha) * raw
-        } else {
-            gravity = raw
-            gravityPrimed = true
-        }
-        let lin = raw - gravity
 
         let row = Row(t: t, ax: lin.x, ay: lin.y, az: lin.z,
                       gx: sample.gyro.x, gy: sample.gyro.y, gz: sample.gyro.z,
