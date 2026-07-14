@@ -7,6 +7,13 @@ options:
     iOS: "16.0"
   createIntermediateGroups: true
 
+# ── Swift Package dependencies ─────────────────────────────────────────────
+# Firebase iOS SDK — only FirebaseDatabase and FirebaseCore are needed.
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    majorVersion: 11
+
 targets:
   StrideSensors:
     type: application
@@ -24,6 +31,12 @@ targets:
           - "Support/Info-additions.plist"
           - "build"
           - "**/.DS_Store"
+    # ── Link Firebase from the package above ──────────────────────────────
+    dependencies:
+      - package: Firebase
+        product: FirebaseDatabase
+      - package: Firebase
+        product: FirebaseCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.stride.sensors
@@ -31,14 +44,11 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"           # iPhone
         SWIFT_VERSION: "5.0"
-        # Let Xcode synthesise the Info.plist and inject the keys we need,
-        # so there's no manual plist to keep in sync.
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Stride receives movement, rotation and heart-rate data from your watch over the local Wi-Fi network."
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
-        # Unsigned by default — Sideloadly / your Apple ID does the signing.
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGN_IDENTITY: ""
