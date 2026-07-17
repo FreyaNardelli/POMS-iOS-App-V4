@@ -83,13 +83,17 @@ final class FirebaseReceiver {
             let gy  = number(dict["gyroY"]),
             let gz  = number(dict["gyroZ"]),
             let hr  = number(dict["heartRate"])
+            let lat  = number(dict["latitude"])
+            let long = number(dict["longitude"])
+            let imufs  = number(dict["imuRateHz"])
+            let sendfs = number(dict["sendRateHz"])        
         else { return }
 
         // Re-encode as the JSON array format the existing SensorPacketParser
         // already handles: [timestamp, ax, ay, az, gx, gy, gz, hr].
         // No new parsing logic needed — the watch and iPhone already agree on
         // this layout for UDP; we just route it through the same path here.
-        let payload = "[\(ts),\(ax),\(ay),\(az),\(gx),\(gy),\(gz),\(hr)]"
+        let payload = "[\(ts),\(ax),\(ay),\(az),\(gx),\(gy),\(gz),\(hr),\(lat),\(long),\(imufs),\(sendfs)]"
         guard let data = payload.data(using: .utf8) else { return }
 
         SensorStore.shared.ingest(data, receivedAt: Date())
