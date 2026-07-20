@@ -5,6 +5,7 @@ import SwiftUI
 /// that navigate to the Check-in, 6-minute walk, and SDMT screens.
 struct HomeView: View {
     @EnvironmentObject var store: SensorStore
+    @ObservedObject private var walkModel = WalkingModelStore.shared
 
     var body: some View {
         NavigationStack {
@@ -12,6 +13,7 @@ struct HomeView: View {
                 VStack(spacing: 0) {
                     greeting
                     moveScore
+                    calibrationCard
                     quests
                 }
                 .padding(.bottom, 20)
@@ -106,6 +108,72 @@ struct HomeView: View {
             Text(value).font(Theme.display(19, .bold)).foregroundColor(Color(hex: 0xFFF3E9))
             Text(label).font(.system(size: 10)).foregroundColor(Color(hex: 0xC9B6AC))
         }
+    }
+
+    // MARK: Calibration walk
+    //
+    // The swing-based speed/distance estimate is per-patient and learns from
+    // GPS-labelled walking, so this is prominent (and clearly "action needed")
+    // until the model is calibrated, then collapses to a quiet "recalibrate"
+    // row so it stays reachable without competing with the daily quests.
+
+    private var calibrationCard: some View {
+        let calibrated = walkModel.model.isCalibrated
+        let count = walkModel.model.trainingCount
+        let target = PatientWalkingModel.minExamplesToTrust
+        let fraction = min(1.0, Double(count) / Double(max(target, 1)))
+
+        return NavigationLink { CalibrationWalkView() } label: {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(calibrated ? Color(hex: 0xE3F6EA) : Color(hex: 0xE7F0FF))
+                    .frame(width: 42, height: 42)
+                    .overlay(
+                        Image(systemName: calibrated ? "checkmark.seal.fill" : "location.north.line.fill")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundColor(calibrated ? Color(hex: 0x3E8659) : Color(hex: 0x3B6FC4))
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(calibrated ? "Walking model calibrated" : "Calibration walk")
+                        .font(Theme.display(16, .semibold)).foregroundColor(Theme.ink)
+                    Text(calibrated
+                         ? "Trained on \(count) segments · tap to improve"
+                         : "Needed for speed & distance · ~3 min outdoors")
+                        .font(.system(size: 12)).foregroundColor(Theme.brown)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !calibrated {
+                        ProgressCapsule(fraction: CGFloat(fraction),
+                                        track: Color(hex: 0xEDE2DA),
+                                        fill: Color(hex: 0x3B6FC4))
+                            .frame(height: 6).padding(.top, 2)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                if calibrated {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(Theme.brownDim)
+                } else {
+                    Text("\(Int(fraction * 100))%")
+                        .font(Theme.display(13, .bold))
+                        .foregroundColor(Color(hex: 0x3B6FC4))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(Capsule().fill(Color(hex: 0xE7F0FF)))
+                }
+            }
+            .padding(EdgeInsets(top: 13, leading: 14, bottom: 13, trailing: 14))
+            .background(Theme.card)
+            .overlay(alignment: .leading) {
+                Rectangle().fill(calibrated ? Theme.green : Color(hex: 0x3B6FC4)).frame(width: 5)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: Theme.cardShadow, radius: 8, y: 6)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14).padding(.top, 14)
     }
 
     // MARK: Quests
