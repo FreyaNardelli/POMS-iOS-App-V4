@@ -24,6 +24,12 @@ struct CalibrationWalkView: View {
     @State private var finishedRun = false
     @State private var showResetConfirm = false
 
+    // Coordinate/distance tracking for the current (or most recent) recording.
+    @State private var startCoord: (lat: Double, long: Double)? = nil
+    @State private var startCoordTime: Date? = nil
+    @State private var distanceTraveled: Double = 0
+    @State private var lastTrackedCoord: (lat: Double, long: Double)? = nil
+
     private var gpsFix: Bool { store.hasGPSFix }
     private var watchLive: Bool { store.packetsPerSecond > 0 }
     private var ready: Bool { gpsFix && watchLive }
@@ -34,11 +40,32 @@ struct CalibrationWalkView: View {
     }
     private var elapsedText: String { String(format: "%d:%02d", elapsed / 60, elapsed % 60) }
 
+    /// Live current coordinate + the timestamp of the sample it came from
+    /// (nil unless a fix is currently held).
+    private var currentCoord: (lat: Double, long: Double)? { store.currentCoordinate }
+    private var currentCoordTime: Date? {
+        guard gpsFix, let s = store.latest else { return nil }
+        return Date(timeIntervalSince1970: s.timestamp)
+    }
+
+    private static let clockFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        return f
+    }()
+    private func clock(_ d: Date?) -> String { d.map { Self.clockFmt.string(from: $0) } ?? "--:--:--" }
+    private func coordText(_ c: (lat: Double, long: Double)?) -> String {
+        c.map { String(format: "%.5f, %.5f", $0.lat, $0.long) } ?? "—, —"
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
                 header
                 readiness.padding(.horizontal, 18).padding(.top, 14)
+                coordinatesSection.padding(.horizontal, 18).padding(.top, 12)
                 progressRing.padding(.top, 22)
                 controls.padding(.horizontal, 22).padding(.top, 24)
                 outcome.padding(.horizontal, 18).padding(.top, 18)
@@ -105,6 +132,44 @@ struct CalibrationWalkView: View {
                 .font(Theme.display(13, .heavy))
                 .foregroundColor(ok ? Theme.mint : Theme.amber)
             Spacer()
+        }
+    }
+
+    // MARK: Coordinates / distance
+
+    /// Starting/current fixes and the running distance walked during the
+    /// active (or most recently finished) recording. Starting coordinates are
+    /// captured lazily — a GPS fix may not exist the instant "Start" is
+    /// tapped — and everything freezes once recording stops so the numbers
+    /// stay readable afterward instead of clearing.
+    private var coordinatesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            coordRow(label: "Starting Coordinates", time: startCoordTime, coord: startCoord)
+            coordRow(label: "Current Coordinates", time: currentCoordTime, coord: currentCoord)
+            HStack {
+                Text("Distance traveled (m)")
+                    .font(Theme.display(11, .heavy)).foregroundColor(Color(hex: 0xC9B6AC))
+                Spacer()
+                Text(String(format: "%.1f", distanceTraveled))
+                    .font(Theme.mono(14)).foregroundColor(.white)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(hex: 0x3A2820))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color(hex: 0x5A463E), lineWidth: 1))
+        )
+    }
+
+    private func coordRow(label: String, time: Date?, coord: (lat: Double, long: Double)?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(label) (\(clock(time)))")
+                .font(Theme.display(11, .heavy)).foregroundColor(Color(hex: 0xC9B6AC))
+            Text(coordText(coord))
+                .font(Theme.mono(13)).foregroundColor(.white)
         }
     }
 
@@ -262,6 +327,10 @@ struct CalibrationWalkView: View {
             countBefore = walkModel.model.trainingCount
             finishedRun = false
             elapsed = 0
+            startCoord = nil
+            startCoordTime = nil
+            lastTrackedCoord = nil
+            distanceTraveled = 0
             walkModel.startCapture()
             recording = true
             startTicker()
@@ -271,10 +340,28 @@ struct CalibrationWalkView: View {
     private func startTicker() {
         stopTicker()
         let t = Timer(timeInterval: 1, repeats: true) { _ in
-            if recording { elapsed += 1 }
+            guard recording else { return }
+            elapsed += 1
+            trackGPS()
         }
         RunLoop.main.add(t, forMode: .common)
         ticker = t
+    }
+
+    /// Captures the first fix seen after recording starts as "starting", and
+    /// accumulates path distance from fix to fix thereafter (Haversine, same
+    /// as the estimator's own GPS ground truth) using the live coordinate at
+    /// each tick.
+    private func trackGPS() {
+        guard let c = currentCoord else { return }
+        if startCoord == nil {
+            startCoord = c
+            startCoordTime = currentCoordTime
+        }
+        if let last = lastTrackedCoord {
+            distanceTraveled += WalkingSpeedEstimator.haversine(last.lat, last.long, c.lat, c.long)
+        }
+        lastTrackedCoord = c
     }
 
     private func stopTicker() { ticker?.invalidate(); ticker = nil }
