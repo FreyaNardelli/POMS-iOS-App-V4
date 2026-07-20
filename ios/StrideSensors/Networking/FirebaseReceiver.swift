@@ -73,7 +73,11 @@ final class FirebaseReceiver {
         guard let dict = snapshot.value as? [String: Any] else { return }
 
         // Pull each field. Firebase stores numbers as NSNumber; the helper
-        // below handles both Double and NSNumber transparently.
+        // below handles both Double and NSNumber transparently. GPS and rate
+        // fields are optional — a watch that hasn't acquired a fix yet, or
+        // older firmware that doesn't report imu/send rates, should still
+        // stream the rest of the packet, so they're read separately below
+        // rather than folded into the required `guard`.
         guard
             let ts  = number(dict["timestamp"]),
             let ax  = number(dict["accelX"]),
@@ -83,18 +87,30 @@ final class FirebaseReceiver {
             let gy  = number(dict["gyroY"]),
             let gz  = number(dict["gyroZ"]),
             let hr  = number(dict["heartRate"])
-            let lat  = number(dict["latitude"])
-            let long = number(dict["longitude"])
-            let imufs  = number(dict["imuRateHz"])
-            let sendfs = number(dict["sendRateHz"])        
         else { return }
 
-        // Re-encode as the JSON array format the existing SensorPacketParser
-        // already handles: [timestamp, ax, ay, az, gx, gy, gz, hr].
-        // No new parsing logic needed — the watch and iPhone already agree on
-        // this layout for UDP; we just route it through the same path here.
-        let payload = "[\(ts),\(ax),\(ay),\(az),\(gx),\(gy),\(gz),\(hr),\(lat),\(long),\(imufs),\(sendfs)]"
-        guard let data = payload.data(using: .utf8) else { return }
+        let lat    = number(dict["latitude"])
+        let long   = number(dict["longitude"])
+        let imufs  = number(dict["imuRateHz"])
+        let sendfs = number(dict["sendRateHz"])
+
+        // Re-encode as a named-key JSON object, which `SensorPacketParser`
+        // already handles via its field-alias lookup. A named object (rather
+        // than the positional array) is used here specifically because GPS
+        // and rate fields are optional: omitting an absent key just leaves
+        // that field `nil` downstream, with no risk of shifting the
+        // positions of fields that come after it — which a placeholder
+        // in a fixed-position array would risk.
+        var obj: [String: Any] = [
+            "t": ts, "ax": ax, "ay": ay, "az": az,
+            "gx": gx, "gy": gy, "gz": gz, "hr": hr
+        ]
+        if let lat    { obj["lat"] = lat }
+        if let long   { obj["long"] = long }
+        if let imufs  { obj["imuRateHz"] = imufs }
+        if let sendfs { obj["sendRateHz"] = sendfs }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
 
         SensorStore.shared.ingest(data, receivedAt: Date())
     }

@@ -13,12 +13,32 @@ struct HistoryView: View {
     @State private var table: Table = .freeLiving
     @State private var dayLog: SensorLogStore.DayLog?
     @State private var shareURL: URL?
+    @State private var selectedSessionIndex: Int = 0
 
     private let maxRowsShown = 1500
 
-    private let headers = ["timestamp", "accel.x", "accel.y", "accel.z*",
-                           "gyro.x", "gyro.y", "gyro.z", "hr"]
-    private let colWidths: [CGFloat] = [120, 78, 78, 88, 78, 78, 78, 52]
+    // "timestamp" is stored as epoch ms (for sorting/precision) but displayed
+    // as a plain HH:mm:ss clock time here — readable, and cheap to compute
+    // (one cached DateFormatter, no per-row allocation) versus a full
+    // YYYY-MM-DD-HH-MM-SS-milliseconds stamp that adds little value in a
+    // same-day table where the date is already picked from the dropdown above.
+    private let headers = ["time", "accel.x", "accel.y", "accel.z*",
+                           "gyro.x", "gyro.y", "gyro.z", "hr",
+                           "GPS lat", "GPS long", "IMU Hz", "Send Hz"]
+    private let colWidths: [CGFloat] = [92, 78, 78, 88, 78, 78, 78, 52, 90, 90, 62, 66]
+
+    private static let timeFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        return f
+    }()
+
+    /// Epoch-ms `Row.t` → "HH:mm:ss" in the device's local time.
+    private func formatTime(_ epochMs: Double) -> String {
+        Self.timeFmt.string(from: Date(timeIntervalSince1970: epochMs / 1000))
+    }
 
     var body: some View {
         NavigationStack {
@@ -104,20 +124,52 @@ struct HistoryView: View {
             if d.sessions.isEmpty {
                 emptyTable("No 6-minute walk tests recorded this day.")
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        ForEach(Array(d.sessions.enumerated()), id: \.element.id) { idx, session in
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text("Test \(idx + 1) · \(timeOfDay(session.start)) · \(session.rows.count.formatted()) samples")
-                                    .font(Theme.display(13, .heavy)).foregroundColor(Theme.orange)
-                                    .padding(.horizontal, 12).padding(.bottom, 6)
-                                tableView(Array(session.rows.suffix(maxRowsShown)), scroll: false)
-                            }
+                mwtContent(d.sessions)
+            }
+        }
+    }
+
+    /// Session picker (one tab per test) + a single scrollable table for
+    /// whichever session is selected, instead of stacking every session's
+    /// full sample table in one continuously-scrolling page.
+    @ViewBuilder
+    private func mwtContent(_ sessions: [SensorLogStore.Session]) -> some View {
+        let idx = min(selectedSessionIndex, sessions.count - 1)
+        VStack(spacing: 0) {
+            sessionTabs(sessions, selected: idx)
+            let session = sessions[idx]
+            caption("Test \(idx + 1) · \(timeOfDay(session.start)) · " +
+                    "\(session.rows.count.formatted()) samples" +
+                    (session.rows.count > maxRowsShown ? " · showing latest \(maxRowsShown)" : ""))
+            tableView(Array(session.rows.suffix(maxRowsShown)))
+        }
+        .onAppear { if selectedSessionIndex >= sessions.count { selectedSessionIndex = 0 } }
+        .onChange(of: sessions.count) { count in
+            if selectedSessionIndex >= count { selectedSessionIndex = max(0, count - 1) }
+        }
+    }
+
+    private func sessionTabs(_ sessions: [SensorLogStore.Session], selected: Int) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(sessions.enumerated()), id: \.element.id) { i, session in
+                    Button { selectedSessionIndex = i } label: {
+                        VStack(spacing: 1) {
+                            Text("Test \(i + 1)").font(Theme.display(12, .bold))
+                            Text(timeOfDay(session.start)).font(.system(size: 10))
                         }
+                        .foregroundColor(i == selected ? .white : Theme.textDim)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(i == selected ? Theme.orange : Theme.panel)
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.panelBorder, lineWidth: i == selected ? 0 : 1))
+                        )
                     }
-                    .padding(.vertical, 12)
+                    .buttonStyle(.plain)
                 }
             }
+            .padding(.horizontal, 16).padding(.vertical, 10)
         }
     }
 
@@ -130,24 +182,17 @@ struct HistoryView: View {
     }
 
     /// Horizontally + vertically scrollable numeric table.
-    private func tableView(_ rows: [SensorLogStore.Row], scroll: Bool = true) -> some View {
-        let body = ScrollView(.horizontal, showsIndicators: true) {
+    private func tableView(_ rows: [SensorLogStore.Row]) -> some View {
+        ScrollView(.horizontal, showsIndicators: true) {
             VStack(spacing: 0) {
                 headerRow
-                if scroll {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(spacing: 0) {
-                            ForEach(rows.indices, id: \.self) { i in dataRow(rows[i], i) }
-                        }
-                    }
-                } else {
+                ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(spacing: 0) {
                         ForEach(rows.indices, id: \.self) { i in dataRow(rows[i], i) }
                     }
                 }
             }
         }
-        return body
     }
 
     private var headerRow: some View {
@@ -164,7 +209,7 @@ struct HistoryView: View {
 
     private func dataRow(_ r: SensorLogStore.Row, _ i: Int) -> some View {
         HStack(spacing: 0) {
-            cell(String(format: "%.0f", r.t), 0, primary: true)
+            cell(formatTime(r.t), 0, primary: true)
             cell(String(format: "%.3f", r.ax), 1)
             cell(String(format: "%.3f", r.ay), 2)
             cell(String(format: "%.3f", r.az), 3)
@@ -172,6 +217,10 @@ struct HistoryView: View {
             cell(String(format: "%.3f", r.gy), 5)
             cell(String(format: "%.3f", r.gz), 6)
             cell(r.hr.map { String(format: "%.0f", $0) } ?? "—", 7)
+            cell(r.lat.map { String(format: "%.5f", $0) } ?? "—", 8)
+            cell(r.long.map { String(format: "%.5f", $0) } ?? "—", 9)
+            cell(r.imuRateHz.map { String(format: "%.0f", $0) } ?? "—", 10)
+            cell(r.sendRateHz.map { String(format: "%.0f", $0) } ?? "—", 11)
         }
         .background(i % 2 == 0 ? Color.clear : Theme.panel.opacity(0.4))
     }
@@ -218,6 +267,7 @@ struct HistoryView: View {
     private func reload() {
         guard !selectedDay.isEmpty else { dayLog = nil; return }
         dayLog = log.loadDay(selectedDay)
+        selectedSessionIndex = 0
     }
 
     private func exportCurrentDay() {

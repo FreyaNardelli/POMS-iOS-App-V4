@@ -54,6 +54,7 @@ struct HomeView: View {
     private var moveScore: some View {
         let live = store.packetsPerSecond > 0
         let hr = store.latest?.heartRate
+        let gpsFix = store.hasGPSFix
         return HStack(spacing: 16) {
             ZStack {
                 Circle().stroke(Color(hex: 0x5A463E), lineWidth: 11)
@@ -69,11 +70,19 @@ struct HomeView: View {
             .frame(width: 104, height: 104)
 
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle().fill(live ? Theme.mint : Color(hex: 0xC9B6AC)).frame(width: 7, height: 7)
-                    Text(live ? "Watch connected" : "Watch offline")
-                        .font(Theme.display(12, .heavy))
-                        .foregroundColor(live ? Theme.mint : Color(hex: 0xC9B6AC))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Circle().fill(live ? Theme.mint : Color(hex: 0xC9B6AC)).frame(width: 7, height: 7)
+                        Text(live ? "Watch connected" : "Watch offline")
+                            .font(Theme.display(12, .heavy))
+                            .foregroundColor(live ? Theme.mint : Color(hex: 0xC9B6AC))
+                    }
+                    HStack(spacing: 6) {
+                        Circle().fill(gpsFix ? Theme.mint : Color(hex: 0xC9B6AC)).frame(width: 7, height: 7)
+                        Text(gpsFix ? "GPS Fix Acquired" : "Waiting for GPS Fix")
+                            .font(Theme.display(12, .heavy))
+                            .foregroundColor(gpsFix ? Theme.mint : Color(hex: 0xC9B6AC))
+                    }
                 }
                 HStack(spacing: 16) {
                     vital(hr != nil ? String(Int(hr!)) : "—", "♥ bpm")

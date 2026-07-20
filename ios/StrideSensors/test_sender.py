@@ -2,11 +2,11 @@
 """
 Test sender for the Stride UDP receiver.
 
-Streams synthetic accelerometer / gyroscope / heart-rate packets to the phone
-so you can verify the app before the real watch firmware is ready.
+Streams synthetic accelerometer / gyroscope / heart-rate / GPS / rate packets
+to the phone so you can verify the app before the real watch firmware is ready.
 
 Usage:
-    python3 test_sender.py <PHONE_IP> [--port 12345] [--rate 50] [--format json]
+    python3 test_sender.py <PHONE_IP> [--port 12345] [--rate 50] [--format json] [--no-gps]
 
 Find <PHONE_IP> in iOS Settings > Wi-Fi > (i) next to your network.
 Phone and computer must be on the same Wi-Fi network.
@@ -23,12 +23,16 @@ def main():
     ap.add_argument("--port", type=int, default=12345)
     ap.add_argument("--rate", type=float, default=50.0, help="packets per second")
     ap.add_argument("--format", choices=["json", "csv"], default="json")
+    ap.add_argument("--no-gps", action="store_true",
+                     help="omit lat/long (simulates 'waiting for GPS fix')")
+    ap.add_argument("--lat", type=float, default=37.3346, help="base latitude")
+    ap.add_argument("--long", type=float, default=-122.0090, help="base longitude")
+    ap.add_argument("--imu-hz", type=float, default=50.0, help="reported IMU sampling rate")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     period = 1.0 / args.rate
     t0 = time.time()
-    hr = 88.0
 
     print(f"Streaming {args.format} to {args.host}:{args.port} at {args.rate} Hz "
           f"(Ctrl-C to stop)")
@@ -44,17 +48,36 @@ def main():
             gy = 40 * math.sin(elapsed * 0.9 + 2)
             gz = 20 * math.sin(elapsed * 1.9)
             hr = 88 + 6 * math.sin(elapsed * 0.25)
+            # tiny synthetic drift so lat/long aren't perfectly static
+            lat = args.lat + 0.00003 * math.sin(elapsed * 0.05)
+            lon = args.long + 0.00003 * math.cos(elapsed * 0.05)
+            send_hz = args.rate
 
             if args.format == "json":
-                payload = (
-                    f'{{"t":{t:.3f},"ax":{ax:.4f},"ay":{ay:.4f},"az":{az:.4f},'
-                    f'"gx":{gx:.2f},"gy":{gy:.2f},"gz":{gz:.2f},"hr":{hr:.1f}}}'
-                )
-            else:  # csv: t,ax,ay,az,gx,gy,gz,hr
-                payload = (
-                    f"{t:.3f},{ax:.4f},{ay:.4f},{az:.4f},"
-                    f"{gx:.2f},{gy:.2f},{gz:.2f},{hr:.1f}"
-                )
+                # [t, ax, ay, az, gx, gy, gz, hr, lat, long, imuRateHz, sendRateHz]
+                if args.no_gps:
+                    payload = (
+                        f'[{t * 1000:.0f},{ax:.4f},{ay:.4f},{az:.4f},'
+                        f'{gx:.2f},{gy:.2f},{gz:.2f},{hr:.1f}]'
+                    )
+                else:
+                    payload = (
+                        f'[{t * 1000:.0f},{ax:.4f},{ay:.4f},{az:.4f},'
+                        f'{gx:.2f},{gy:.2f},{gz:.2f},{hr:.1f},'
+                        f'{lat:.6f},{lon:.6f},{args.imu_hz:.1f},{send_hz:.1f}]'
+                    )
+            else:  # csv: t,ax,ay,az,gx,gy,gz,hr[,lat,long,imuRateHz,sendRateHz]
+                if args.no_gps:
+                    payload = (
+                        f"{t * 1000:.0f},{ax:.4f},{ay:.4f},{az:.4f},"
+                        f"{gx:.2f},{gy:.2f},{gz:.2f},{hr:.1f}"
+                    )
+                else:
+                    payload = (
+                        f"{t * 1000:.0f},{ax:.4f},{ay:.4f},{az:.4f},"
+                        f"{gx:.2f},{gy:.2f},{gz:.2f},{hr:.1f},"
+                        f"{lat:.6f},{lon:.6f},{args.imu_hz:.1f},{send_hz:.1f}"
+                    )
 
             sock.sendto(payload.encode("utf-8"), (args.host, args.port))
             time.sleep(period)

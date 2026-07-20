@@ -66,6 +66,10 @@ final class SensorStore: ObservableObject {
                                    accel: linearAccel,
                                    gyro: parsed.gyro,
                                    heartRate: parsed.heartRate,
+                                   latitude: parsed.latitude,
+                                   longitude: parsed.longitude,
+                                   imuRateHz: parsed.imuRateHz,
+                                   sendRateHz: parsed.sendRateHz,
                                    fields: parsed.fields,
                                    raw: parsed.raw)
         history.append(sample)
@@ -85,6 +89,18 @@ final class SensorStore: ObservableObject {
         }
 
         SensorLogStore.shared.record(sample, receivedAt: receivedAt)   // persist to daily CSV
+
+        // Feed the walking-speed estimator with the *raw* (pre-gravity-removal)
+        // acceleration — it derives its own gravity direction so it can build
+        // the horizontal plane pca-acc needs. Only buffers during an active
+        // 6MWT, so this is a no-op the rest of the time.
+        WalkingModelStore.shared.ingest(
+            rawAccel: parsed.accel,
+            gyro: parsed.gyro,
+            timestamp: sample.timestamp,
+            latitude: sample.hasGPSFix ? sample.latitude : nil,
+            longitude: sample.hasGPSFix ? sample.longitude : nil)
+
         onSample?(sample)
     }
 
@@ -146,4 +162,19 @@ final class SensorStore: ObservableObject {
         lock.lock(); defer { lock.unlock() }
         return history.reversed().first(where: { $0.heartRate != nil })?.heartRate
     }
+
+    /// True once the most recent sample carries a plausible GPS fix.
+    var hasGPSFix: Bool { latest?.hasGPSFix ?? false }
+
+    /// Most recent (latitude, longitude), if a fix has been acquired.
+    var currentCoordinate: (lat: Double, long: Double)? {
+        guard let s = latest, s.hasGPSFix, let lat = s.latitude, let long = s.longitude else { return nil }
+        return (lat, long)
+    }
+
+    /// Watch-reported IMU sampling rate from the most recent sample, if present.
+    var currentIMURateHz: Double? { latest?.imuRateHz }
+
+    /// Watch-reported send rate from the most recent sample, if present.
+    var currentSendRateHz: Double? { latest?.sendRateHz }
 }

@@ -6,7 +6,8 @@ import UIKit
 /// directory, named `YYYY_MM_DD.csv`. Each daily file holds two tables with the
 /// same columns:
 ///
-///   `timestamp, accel.x, accel.y, accel.z (gravity removed), gyro.x, gyro.y, gyro.z, heartbeat`
+///   `timestamp, accel.x, accel.y, accel.z (gravity removed), gyro.x, gyro.y,
+///   gyro.z, heartbeat, Live GPS Lat, Live GPS Long, IMU Sampling Rate, Sender Rate`
 ///
 ///   • **[FREE-LIVING]** — every sample received that day.
 ///   • **[6MWT]** — samples captured during each 6-minute walk test, one
@@ -14,7 +15,9 @@ import UIKit
 ///
 /// Accelerometer values are gravity-removed (linear acceleration) via a per-axis
 /// low-pass gravity estimate; timestamps are epoch milliseconds (from the watch
-/// packet when present, else the device receive time). Gyro is rad/s.
+/// packet when present, else the device receive time). Gyro is rad/s. GPS
+/// lat/long are the live readings at the moment each sample arrived, and the
+/// IMU/sender rates are the watch-reported values from the same packet.
 ///
 /// Access anywhere with `SensorLogStore.shared`.
 final class SensorLogStore: ObservableObject {
@@ -22,7 +25,7 @@ final class SensorLogStore: ObservableObject {
     static let shared = SensorLogStore()
 
     /// Column header — exactly as requested by the spec.
-    static let columns = "timestamp,accel.x,accel.y,accel.z (gravity removed),gyro.x,gyro.y,gyro.z,heartbeat"
+    static let columns = "timestamp,accel.x,accel.y,accel.z (gravity removed),gyro.x,gyro.y,gyro.z,heartbeat,Live GPS Lat,Live GPS Long,IMU Sampling Rate,Sender Rate"
 
     // MARK: Types
 
@@ -31,6 +34,10 @@ final class SensorLogStore: ObservableObject {
         let ax, ay, az: Double   // gravity-removed, m/s²
         let gx, gy, gz: Double   // rad/s
         let hr: Double?          // bpm (optional)
+        let lat: Double?         // live GPS latitude, degrees (optional — nil until fix)
+        let long: Double?        // live GPS longitude, degrees (optional — nil until fix)
+        let imuRateHz: Double?   // watch-reported IMU sampling rate, Hz (optional)
+        let sendRateHz: Double?  // watch-reported send rate, Hz (optional)
     }
 
     struct Session: Identifiable {
@@ -110,7 +117,11 @@ final class SensorLogStore: ObservableObject {
 
         let row = Row(t: t, ax: lin.x, ay: lin.y, az: lin.z,
                       gx: sample.gyro.x, gy: sample.gyro.y, gz: sample.gyro.z,
-                      hr: sample.heartRate)
+                      hr: sample.heartRate,
+                      lat: sample.hasGPSFix ? sample.latitude : nil,
+                      long: sample.hasGPSFix ? sample.longitude : nil,
+                      imuRateHz: sample.imuRateHz,
+                      sendRateHz: sample.sendRateHz)
 
         current.freeLiving.append(row)
         if current.freeLiving.count > softCap {
@@ -230,8 +241,9 @@ final class SensorLogStore: ObservableObject {
 
     private static func fmtNum(_ d: Double) -> String { String(format: "%.6f", d) }
     private static func fmtTime(_ d: Double) -> String { String(format: "%.0f", d) }
+    private static func fmtCoord(_ d: Double) -> String { String(format: "%.6f", d) }
     private static func rowLine(_ r: Row) -> String {
-        "\(fmtTime(r.t)),\(fmtNum(r.ax)),\(fmtNum(r.ay)),\(fmtNum(r.az)),\(fmtNum(r.gx)),\(fmtNum(r.gy)),\(fmtNum(r.gz)),\(r.hr.map { fmtNum($0) } ?? "")"
+        "\(fmtTime(r.t)),\(fmtNum(r.ax)),\(fmtNum(r.ay)),\(fmtNum(r.az)),\(fmtNum(r.gx)),\(fmtNum(r.gy)),\(fmtNum(r.gz)),\(r.hr.map { fmtNum($0) } ?? ""),\(r.lat.map { fmtCoord($0) } ?? ""),\(r.long.map { fmtCoord($0) } ?? ""),\(r.imuRateHz.map { fmtNum($0) } ?? ""),\(r.sendRateHz.map { fmtNum($0) } ?? "")"
     }
 
     static func serialize(day: String, freeLiving: [Row], sessions: [Session]) -> String {
@@ -293,12 +305,20 @@ final class SensorLogStore: ObservableObject {
         return DayLog(day: day, freeLiving: freeLiving, sessions: sessions)
     }
 
+    /// Backward compatible with older logs that only had up to the `heartbeat`
+    /// column (8 fields) — GPS/rate columns simply read back as `nil` for
+    /// those rows.
     private static func parseRow(_ line: String) -> Row? {
         let p = line.split(separator: ",", omittingEmptySubsequences: false).map { String($0) }
         guard p.count >= 7, let t = Double(p[0]),
               let ax = Double(p[1]), let ay = Double(p[2]), let az = Double(p[3]),
               let gx = Double(p[4]), let gy = Double(p[5]), let gz = Double(p[6]) else { return nil }
         let hr = p.count >= 8 ? Double(p[7]) : nil
-        return Row(t: t, ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz, hr: hr)
+        let lat = p.count >= 9 ? Double(p[8]) : nil
+        let long = p.count >= 10 ? Double(p[9]) : nil
+        let imuRateHz = p.count >= 11 ? Double(p[10]) : nil
+        let sendRateHz = p.count >= 12 ? Double(p[11]) : nil
+        return Row(t: t, ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz, hr: hr,
+                   lat: lat, long: long, imuRateHz: imuRateHz, sendRateHz: sendRateHz)
     }
 }
