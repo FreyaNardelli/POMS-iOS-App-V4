@@ -23,6 +23,14 @@ struct WalkResult: Identifiable {
     let note: String
 }
 
+/// A single GPS fix observed during capture, with the timestamp of the sample
+/// it arrived on.
+struct LiveFix: Equatable {
+    let lat: Double
+    let long: Double
+    let time: Date
+}
+
 /// Owns the persisted `PatientWalkingModel`, drives training/prediction, and
 /// buffers the live stream during a 6MWT so a `WalkResult` can be produced the
 /// moment the test ends.
@@ -40,6 +48,23 @@ final class WalkingModelStore: ObservableObject {
     @Published private(set) var lastResult: WalkResult?
     @Published private(set) var isAnalyzing = false
 
+    // MARK: Live GPS tracking (accumulated at full packet rate)
+    //
+    // Distance is summed across *every distinct* fix that arrives while
+    // capturing — not sampled on a timer — so it matches the resolution the
+    // training labels are computed at. Publishing to SwiftUI is throttled
+    // separately (see `publishInterval`) because the accumulation can run at
+    // the full IMU rate, which is far faster than any display needs.
+    @Published private(set) var liveStartFix: LiveFix?
+    @Published private(set) var liveCurrentFix: LiveFix?
+    @Published private(set) var liveDistance: Double = 0
+    /// Number of distinct GPS fixes seen this capture (lets the UI show the
+    /// effective GPS update rate rather than implying a fixed 1 Hz).
+    @Published private(set) var liveFixCount: Int = 0
+
+    /// UI refresh cap for the live values. Accumulation is unthrottled.
+    private let publishInterval: CFTimeInterval = 0.1   // 10 Hz
+
     /// True while a test is recording into the swing buffer.
     private(set) var capturing = false
 
@@ -48,6 +73,14 @@ final class WalkingModelStore: ObservableObject {
     private var gravityPrimed = false
     private let gravityAlpha = 0.9        // same as SensorStore
     private let lock = NSLock()
+
+    // Internal (lock-protected) tracking accumulators.
+    private var trackStart: LiveFix?
+    private var trackCurrent: LiveFix?
+    private var trackLastCoord: (Double, Double)?
+    private var trackDistance: Double = 0
+    private var trackFixCount: Int = 0
+    private var lastPublishAt: CFTimeInterval = 0
 
     private let fm = FileManager.default
 
@@ -63,8 +96,20 @@ final class WalkingModelStore: ObservableObject {
         gravity = .zero
         gravityPrimed = false
         capturing = true
+        trackStart = nil
+        trackCurrent = nil
+        trackLastCoord = nil
+        trackDistance = 0
+        trackFixCount = 0
+        lastPublishAt = 0
         lock.unlock()
-        DispatchQueue.main.async { self.lastResult = nil }
+        DispatchQueue.main.async {
+            self.lastResult = nil
+            self.liveStartFix = nil
+            self.liveCurrentFix = nil
+            self.liveDistance = 0
+            self.liveFixCount = 0
+        }
     }
 
     /// Stop capturing and analyse. Returns immediately; the result is published
@@ -74,7 +119,18 @@ final class WalkingModelStore: ObservableObject {
         capturing = false
         let readings = buffer
         buffer.removeAll(keepingCapacity: true)
+        // Final exact publish so the displayed values aren't left up to one
+        // throttle interval stale.
+        let fStart = trackStart, fCur = trackCurrent
+        let fDist = trackDistance, fCount = trackFixCount
         lock.unlock()
+
+        DispatchQueue.main.async {
+            self.liveStartFix = fStart
+            self.liveCurrentFix = fCur
+            self.liveDistance = fDist
+            self.liveFixCount = fCount
+        }
 
         guard readings.count >= 8 else {
             DispatchQueue.main.async {
@@ -122,7 +178,43 @@ final class WalkingModelStore: ObservableObject {
             t: timestamp, ext: ext, gravityDir: gDir, lat: latitude, long: longitude))
         // Safety cap: 6 min at 100 Hz = 36k; keep generous headroom.
         if buffer.count > 120_000 { buffer.removeFirst(buffer.count - 120_000) }
+
+        // ── Live GPS accumulation, at whatever rate fixes actually arrive ──
+        // Every packet is inspected. Only *distinct* coordinates advance the
+        // distance: the watch streams IMU faster than its GPS updates, so
+        // consecutive packets often repeat the same fix, and summing those
+        // repeats would add nothing but would inflate the fix count.
+        var publish: (LiveFix?, LiveFix?, Double, Int)? = nil
+        if let la = latitude, let lo = longitude {
+            let fix = LiveFix(lat: la, long: lo,
+                              time: Date(timeIntervalSince1970: timestamp))
+            let changed = trackLastCoord.map { $0.0 != la || $0.1 != lo } ?? true
+            if changed {
+                if let last = trackLastCoord {
+                    trackDistance += WalkingSpeedEstimator.haversine(last.0, last.1, la, lo)
+                }
+                trackLastCoord = (la, lo)
+                trackFixCount += 1
+            }
+            trackCurrent = fix
+            if trackStart == nil { trackStart = fix }
+
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - lastPublishAt >= publishInterval {
+                lastPublishAt = now
+                publish = (trackStart, trackCurrent, trackDistance, trackFixCount)
+            }
+        }
         lock.unlock()
+
+        if let (s, c, d, n) = publish {
+            DispatchQueue.main.async {
+                self.liveStartFix = s
+                self.liveCurrentFix = c
+                self.liveDistance = d
+                self.liveFixCount = n
+            }
+        }
     }
 
     // MARK: - Analysis + training
