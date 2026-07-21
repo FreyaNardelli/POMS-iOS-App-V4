@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// 6-minute walk — a real countdown from 6:00 with a progress ring and running
-/// distance estimate, mirroring the HTML prototype. Start / Pause / Resume /
-/// Restart; Finish returns home.
+/// 6-minute walk — a real countdown from 6:00 with a progress ring and a live
+/// GPS distance readout. Start / Pause / Resume / Restart; Finish ends the
+/// test early.
+///
+/// The in-progress "so far" distance is real GPS path distance from
+/// `WalkingModelStore` (see `distText`) — earlier revisions showed a
+/// synthetic time-based placeholder here; that's been replaced.
 ///
 /// When a test completes (timer reaches 0, or the user taps Finish after some
 /// walking), the swing-based speed & distance estimate is computed from the
@@ -24,7 +28,16 @@ struct WalkView: View {
 
     private var fraction: Double { Double(360 - secondsLeft) / 360 }
     private var timeText: String { String(format: "%d:%02d", secondsLeft / 60, secondsLeft % 60) }
-    private var distText: String { "\(Int(Double(360 - secondsLeft) * 1.5)) m so far" }
+    /// Real live GPS path distance for this test, from `WalkingModelStore`
+    /// (accumulated on every packet — see `WalkingModelStore.ingest`). Shows
+    /// a neutral "0 m so far" before a test has started, and "waiting for
+    /// GPS…" once recording if no fix has been acquired yet, rather than
+    /// silently showing 0 as if that were a real reading.
+    private var distText: String {
+        guard secondsLeft < 360 || completedThisVisit else { return "0 m so far" }
+        guard walkModel.liveFixCount > 0 else { return "waiting for GPS…" }
+        return "\(Int(walkModel.liveDistance)) m so far"
+    }
     private var buttonLabel: String {
         running ? "Pause" : (secondsLeft <= 0 ? "Restart" : (secondsLeft < 360 ? "Resume" : "Start"))
     }
@@ -130,9 +143,16 @@ struct WalkView: View {
     private func finish() {
         running = false
         stopTicker()
+        // Capture *before* endTest() clears it — stopCaptureAndAnalyze() flips
+        // isAnalyzing/lastResult asynchronously (DispatchQueue.main.async), so
+        // checking those flags right after calling it would almost always
+        // read their stale pre-dispatch values and dismiss before analysis
+        // ever gets to run. Whether a test was actually active is known
+        // synchronously, so use that instead: nothing to analyse only if no
+        // test was ever started.
+        let wasActive = SensorLogStore.shared.mwtActive || WalkingModelStore.shared.capturing
         endTest()
-        // Stay on-screen if we have a result to show; otherwise leave.
-        if walkModel.lastResult == nil && !walkModel.isAnalyzing { dismiss() }
+        if !wasActive { dismiss() }
     }
 
     // MARK: Test start / end (session logging + swing capture together)
