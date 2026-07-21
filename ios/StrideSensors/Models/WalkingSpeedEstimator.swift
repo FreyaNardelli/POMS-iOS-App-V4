@@ -41,6 +41,52 @@ import simd
 ///     itself found subject-specific models necessary below 100 cm/s.
 ///
 /// This type is pure computation. It holds no state and does no I/O.
+
+extension WalkingSpeedEstimator {
+
+    /// One manually-tapped distance mark: cumulative distance at a known
+    /// instant, from a person tapping a "Mark" button each time they
+    /// physically pass a pre-measured point (e.g. every 1m of taped-down
+    /// floor markings). An alternative, potentially higher-precision ground
+    /// truth than GPS.
+    struct ManualMark {
+        let t: Double                    // seconds — SAME clock as Reading.t
+        let cumulativeDistance: Double   // metres, running total as of this tap
+    }
+
+    /// Overlays manually-marked distance as each epoch's speed label.
+    /// Builds a piecewise-linear cumulative-distance-vs-time curve from the
+    /// marks (constant speed between consecutive taps), then for each epoch
+    /// takes (interpolated distance at epoch end − at epoch start) / epoch
+    /// duration. An epoch entirely outside the marked time span gets no
+    /// label (nil) — nothing to interpolate from.
+    static func assignManualSpeeds(_ epochs: [Epoch], marks: [ManualMark]) -> [Epoch] {
+        guard marks.count >= 2 else { return epochs }
+        let sorted = marks.sorted { $0.t < $1.t }
+        let times = sorted.map { $0.t }
+        let dists = sorted.map { $0.cumulativeDistance }
+
+        func interpolate(_ t: Double) -> Double? {
+            guard let first = times.first, let last = times.last, t >= first, t <= last else { return nil }
+            var j = 0
+            while j < times.count - 2 && times[j + 1] < t { j += 1 }
+            let t0 = times[j], t1 = times[j + 1]
+            let d0 = dists[j], d1 = dists[j + 1]
+            guard t1 > t0 else { return d0 }
+            let frac = (t - t0) / (t1 - t0)
+            return d0 + (d1 - d0) * frac
+        }
+
+        return epochs.map { e in
+            guard let dStart = interpolate(e.startT), let dEnd = interpolate(e.startT + e.duration) else {
+                return e
+            }
+            return Epoch(startT: e.startT, duration: e.duration, features: e.features,
+                        gpsSpeed: e.gpsSpeed, manualSpeed: (dEnd - dStart) / e.duration)
+        }
+    }
+}
+
 enum WalkingSpeedEstimator {
 
     /// A single ingested reading, already reduced to what the estimator needs.
@@ -56,12 +102,17 @@ enum WalkingSpeedEstimator {
         let long: Double?
     }
 
-    /// One 5-second analysis window.
-    struct Epoch {
+struct Epoch {
         let startT: Double
         let duration: Double          // seconds
         let features: [Double]        // 48-dim: 8 TD + 40 FD
         let gpsSpeed: Double?         // m/s ground truth, if GPS covered this epoch
+        let manualSpeed: Double? = nil // m/s ground truth from tape-measure marks, if any
+
+        /// The label actually used for training — manual marks are treated
+        /// as authoritative when present ("absolute accurate dataset"),
+        /// falling back to GPS otherwise.
+        var trainingSpeed: Double? { manualSpeed ?? gpsSpeed }
     }
 
     /// Result of running the estimator over a whole test.
