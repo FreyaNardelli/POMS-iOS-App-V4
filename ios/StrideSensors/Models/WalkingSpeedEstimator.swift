@@ -107,7 +107,16 @@ struct Epoch {
         let duration: Double          // seconds
         let features: [Double]        // 48-dim: 8 TD + 40 FD
         let gpsSpeed: Double?         // m/s ground truth, if GPS covered this epoch
-        let manualSpeed: Double? = nil // m/s ground truth from tape-measure marks, if any
+        let manualSpeed: Double?      // m/s ground truth from tape-measure marks, if any
+
+        init(startT: Double, duration: Double, features: [Double],
+             gpsSpeed: Double?, manualSpeed: Double? = nil) {
+            self.startT = startT
+            self.duration = duration
+            self.features = features
+            self.gpsSpeed = gpsSpeed
+            self.manualSpeed = manualSpeed
+        }
 
         /// The label actually used for training — manual marks are treated
         /// as authoritative when present ("absolute accurate dataset"),
