@@ -242,6 +242,10 @@ private struct WalkResultBody: View {
                     stat("Distance", meters(result.swingDistanceMeters), Theme.orange)
                     stat("Avg speed", speed(result.swingAvgSpeed), Theme.mint)
                 }
+                if let err = result.swingDistanceErrorMeters {
+                    Text("± \(String(format: "%.0f", err)) m (cross-validated, conservative estimate)")
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
+                }
                 if result.perMinuteSpeed.contains(where: { $0 > 0 }) {
                     perMinute
                 }
