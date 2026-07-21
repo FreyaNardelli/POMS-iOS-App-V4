@@ -65,7 +65,9 @@ struct PatientWalkingModel: Codable {
     private(set) var weights: [Double] = []     // on standardised features
     private(set) var bias: Double = 0           // = mean(training speeds)
     private(set) var trainedAt: Date?
-
+    private(set) var loocvSpeedRMSE: Double? = nil   // m/s, leave-one-out cross-validated
+    private(set) var loocvSpeedMAE: Double? = nil    // m/s, leave-one-out cross-validated    
+    
     /// Rolling training buffer (capped) so refits can pool across tests.
     private(set) var examples: [Example] = []
 
@@ -148,6 +150,7 @@ struct PatientWalkingModel: Codable {
     }
 
     /// Fit ridge regression on the current buffer.
+/// Fit ridge regression on the current buffer.
     mutating func fit() {
         let d = WalkingSpeedEstimator.featureCount
         let rows = examples.filter { $0.features.count == d }
@@ -189,13 +192,33 @@ struct PatientWalkingModel: Codable {
             xtx[a][a] += Self.ridgeLambda
         }
 
-        guard let w = LinearAlgebra.solveSPD(xtx, xty) else { return }
+        guard let L = LinearAlgebra.cholesky(xtx) else { return }
+        let w = LinearAlgebra.solveWithCholesky(L, xty)
 
         featureMean = mean
         featureStd = std
         weights = w
         bias = yMean
         trainedAt = Date()
+
+        // Leave-one-out cross-validated error via the ridge hat-matrix
+        // shortcut: e_i^loo = e_i / (1 - H_ii). Reuses L from the fit above,
+        // so this is O(n·d²) rather than O(n·d³) from refitting n times.
+        // NOTE: not numerically re-validated after this edit (see chat) --
+        // worth a sanity check, especially near n ≈ d (48 features).
+        var looResiduals = [Double](repeating: 0, count: rows.count)
+        for i in 0..<rows.count {
+            let xi = X[i]
+            let v = LinearAlgebra.solveWithCholesky(L, xi)      // v = (XᵀX+λI)⁻¹xi
+            var hii = 0.0
+            for j in 0..<d { hii += xi[j] * v[j] }
+            let yhat = yMean + zip(xi, w).reduce(0) { $0 + $1.0 * $1.1 }
+            let resid = rows[i].speed - yhat
+            let denom = max(1 - hii, 1e-6)   // guards a near-leverage-1 row
+            looResiduals[i] = resid / denom
+        }
+        loocvSpeedRMSE = (looResiduals.reduce(0) { $0 + $1 * $1 } / Double(looResiduals.count)).squareRoot()
+        loocvSpeedMAE = looResiduals.reduce(0) { $0 + abs($1) } / Double(looResiduals.count)
     }
 
     // MARK: - Prediction
@@ -220,39 +243,49 @@ struct PatientWalkingModel: Codable {
 /// definite once the ridge term is added), falling back to nil if the
 /// factorisation fails.
 enum LinearAlgebra {
-    static func solveSPD(_ A: [[Double]], _ b: [Double]) -> [Double]? {
-        let n = b.count
-        guard A.count == n, A.allSatisfy({ $0.count == n }) else { return nil }
-
-        // Cholesky: A = L Lᵀ.
+    /// Cholesky factorization: returns L such that A = L·Lᵀ, or nil if A
+    /// isn't symmetric positive definite.
+    static func cholesky(_ A: [[Double]]) -> [[Double]]? {
+        let n = A.count
+        guard A.allSatisfy({ $0.count == n }) else { return nil }
         var L = [[Double]](repeating: [Double](repeating: 0, count: n), count: n)
         for i in 0..<n {
             for j in 0...i {
                 var sum = A[i][j]
                 for k in 0..<j { sum -= L[i][k] * L[j][k] }
                 if i == j {
-                    if sum <= 0 { return nil }        // not positive-definite
+                    if sum <= 0 { return nil }
                     L[i][j] = sum.squareRoot()
                 } else {
                     L[i][j] = sum / L[j][j]
                 }
             }
         }
+        return L
+    }
 
-        // Forward solve L z = b.
+    /// Solve Ax = b given A's Cholesky factor L — reusable across many
+    /// right-hand sides (e.g. once per training row, for leverage) without
+    /// re-factoring A each time.
+    static func solveWithCholesky(_ L: [[Double]], _ b: [Double]) -> [Double] {
+        let n = b.count
         var z = [Double](repeating: 0, count: n)
         for i in 0..<n {
             var sum = b[i]
             for k in 0..<i { sum -= L[i][k] * z[k] }
             z[i] = sum / L[i][i]
         }
-        // Back solve Lᵀ x = z.
         var x = [Double](repeating: 0, count: n)
         for i in stride(from: n - 1, through: 0, by: -1) {
             var sum = z[i]
-            for k in (i + 1)..<n where k < n { sum -= L[k][i] * x[k] }
+            for k in (i + 1)..<n { sum -= L[k][i] * x[k] }
             x[i] = sum / L[i][i]
         }
         return x
+    }
+
+    static func solveSPD(_ A: [[Double]], _ b: [Double]) -> [Double]? {
+        guard let L = cholesky(A) else { return nil }
+        return solveWithCholesky(L, b)
     }
 }
