@@ -32,6 +32,42 @@ struct WalkResult: Identifiable {
     let trainingCount: Int
     let usedGPSForTraining: Bool
     let note: String
+
+    // Add this explicit initializer to match the call sites
+    init(date: Date,
+         durationSeconds: Double,
+         swingDistanceMeters: Double?,
+         swingAvgSpeed: Double?,
+         swingDistanceErrorMeters: Double?,
+         perMinuteSpeed: [Double],
+         gpsDistanceMeters: Double?,
+         epochCount: Int,
+         gpsEpochCount: Int,
+         manualEpochCount: Int,
+         calibrated: Bool,
+         trainingCount: Int,
+         usedGPSForTraining: Bool,
+         usedManualForTraining: Bool,
+         note: String)
+    {
+        // id keeps its default value
+        self.date = date
+        self.durationSeconds = durationSeconds
+        self.swingDistanceMeters = swingDistanceMeters
+        self.swingAvgSpeed = swingAvgSpeed
+        self.swingDistanceErrorMeters = swingDistanceErrorMeters
+        self.perMinuteSpeed = perMinuteSpeed
+        self.gpsDistanceMeters = gpsDistanceMeters
+        self.epochCount = epochCount
+        self.gpsEpochCount = gpsEpochCount
+        self.manualEpochCount = manualEpochCount
+        self.calibrated = calibrated
+        self.trainingCount = trainingCount
+        self.usedGPSForTraining = usedGPSForTraining
+        self.usedManualForTraining = usedManualForTraining
+        self.note = note
+    }
+    
 }
 
 /// A single GPS fix observed during capture, with the timestamp of the sample
