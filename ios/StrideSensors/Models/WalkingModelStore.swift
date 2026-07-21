@@ -184,9 +184,9 @@ func startCapture(manualMode: Bool = false) {
                 self.lastResult = WalkResult(
                     date: Date(), durationSeconds: 0,
                     swingDistanceMeters: nil, swingAvgSpeed: nil, swingDistanceErrorMeters: nil, perMinuteSpeed: [],
-                    gpsDistanceMeters: nil, epochCount: 0, gpsEpochCount: 0,
+                    gpsDistanceMeters: nil, epochCount: 0, gpsEpochCount: 0, manualEpochCount: 0,
                     calibrated: self.model.isCalibrated,
-                    trainingCount: self.model.trainingCount, usedGPSForTraining: false,
+                    trainingCount: self.model.trainingCount, usedGPSForTraining: false, usedManualForTraining: false,
                     note: "Not enough sensor data was captured to estimate speed.")
             }
             return
