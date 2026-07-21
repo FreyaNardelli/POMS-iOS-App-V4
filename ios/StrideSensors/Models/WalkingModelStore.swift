@@ -16,6 +16,8 @@ struct WalkResult: Identifiable {
 
     /// GPS reference for the same test, if a fix was held.
     let gpsDistanceMeters: Double?
+    let manualEpochCount: Int
+    let usedManualForTraining: Bool
 
     /// Number of 5-second pca-acc analysis windows computed for this test
     /// (see `WalkingSpeedEstimator.epochSeconds`), and how many of those
@@ -70,6 +72,9 @@ final class WalkingModelStore: ObservableObject {
     /// Number of distinct GPS fixes seen this capture (lets the UI show the
     /// effective GPS update rate rather than implying a fixed 1 Hz).
     @Published private(set) var liveFixCount: Int = 0
+    @Published private(set) var manualMode = false
+    @Published private(set) var liveManualDistance: Double = 0
+    @Published private(set) var liveManualMarkCount: Int = 0
 
     /// UI refresh cap for the live values. Accumulation is unthrottled.
     private let publishInterval: CFTimeInterval = 0.1   // 10 Hz
@@ -88,6 +93,7 @@ final class WalkingModelStore: ObservableObject {
     private var trackDistance: Double = 0
     private var trackFixCount: Int = 0
     private var lastPublishAt: CFTimeInterval = 0
+    private var manualMarks: [WalkingSpeedEstimator.ManualMark] = []
 
     private let fm = FileManager.default
 
@@ -97,7 +103,7 @@ final class WalkingModelStore: ObservableObject {
 
     // MARK: - Test lifecycle (called from WalkView)
 
-    func startCapture() {
+func startCapture(manualMode: Bool = false) {
         lock.lock()
         buffer.removeAll(keepingCapacity: true)
         gravityRemover = GravityRemover()
@@ -108,14 +114,43 @@ final class WalkingModelStore: ObservableObject {
         trackDistance = 0
         trackFixCount = 0
         lastPublishAt = 0
+        manualMarks.removeAll(keepingCapacity: true)
         lock.unlock()
+        // startCapture() is only ever called from a SwiftUI button action
+        // (WalkView / CalibrationWalkView), i.e. already on the main thread
+        // — unlike ingest()/analyze(), which run on background threads and
+        // need the DispatchQueue.main.async wrapping seen below.
+        self.manualMode = manualMode
         DispatchQueue.main.async {
             self.lastResult = nil
             self.liveStartFix = nil
             self.liveCurrentFix = nil
             self.liveDistance = 0
             self.liveFixCount = 0
+            self.liveManualDistance = 0
+            self.liveManualMarkCount = 0
         }
+    }
+
+    /// Records one manual distance-mark tap. Call this directly from the
+    /// "Mark" button's action.
+    ///
+    /// Uses the most recent sample's own timestamp — NOT the phone's local
+    /// clock — so marks land on the same timebase as the buffered readings
+    /// (`Reading.t`, which comes from the watch's reported time, or the
+    /// phone's receive time as a fallback). Stamping marks with `Date()`
+    /// instead would silently offset every mark relative to the epochs
+    /// it's meant to label.
+    func recordManualMark(intervalMeters: Double) {
+        guard capturing, manualMode, intervalMeters > 0,
+              let t = SensorStore.shared.latest?.timestamp else { return }
+        lock.lock()
+        let newTotal = (manualMarks.last?.cumulativeDistance ?? 0) + intervalMeters
+        manualMarks.append(WalkingSpeedEstimator.ManualMark(t: t, cumulativeDistance: newTotal))
+        let count = manualMarks.count
+        lock.unlock()
+        liveManualDistance = newTotal
+        liveManualMarkCount = count
     }
 
     /// Stop capturing and analyse. Returns immediately; the result is published
@@ -225,17 +260,29 @@ final class WalkingModelStore: ObservableObject {
     // MARK: - Analysis + training
 
     private func analyze(_ readings: [WalkingSpeedEstimator.Reading], source: String) -> WalkResult {
-        let analysis = WalkingSpeedEstimator.analyze(readings)
-        let gpsEpochCount = analysis.epochs.filter { $0.gpsSpeed != nil }.count
-        let hadGPS = gpsEpochCount > 0
+        var analysis = WalkingSpeedEstimator.analyze(readings)
 
-        // Train from this test's GPS-labelled epochs, then read the model back.
+        let marksSnapshot: [WalkingSpeedEstimator.ManualMark]
+        lock.lock(); marksSnapshot = manualMarks; lock.unlock()
+        let usedManual = marksSnapshot.count >= 2
+        if usedManual {
+            analysis = WalkingSpeedEstimator.Analysis(
+                epochs: WalkingSpeedEstimator.assignManualSpeeds(analysis.epochs, marks: marksSnapshot),
+                gpsDistanceMeters: analysis.gpsDistanceMeters,
+                durationSeconds: analysis.durationSeconds,
+                sampleRateHz: analysis.sampleRateHz)
+        }
+
+        let gpsEpochCount = analysis.epochs.filter { $0.gpsSpeed != nil }.count
+        let manualEpochCount = analysis.epochs.filter { $0.manualSpeed != nil }.count
+        let hadGPS = gpsEpochCount > 0
+        let hadManual = manualEpochCount > 0
+
+        // Train from this test's labelled epochs, then read the model back.
         var m = model
-        if hadGPS { m.addAndRetrain(epochs: analysis.epochs, date: Date(), source: source) }
+        if hadGPS || hadManual { m.addAndRetrain(epochs: analysis.epochs, date: Date(), source: source) }
         let calibrated = m.isCalibrated
 
-        // Predict per-epoch speed and integrate distance (only meaningful once
-        // the model is calibrated).
         var swingDistance: Double? = nil
         var swingAvg: Double? = nil
         var perMinute: [Double] = []
@@ -256,21 +303,15 @@ final class WalkingModelStore: ObservableObject {
             }
         }
 
-        // Conservative distance-error bound: RMSE * duration, i.e. assumes
-        // per-epoch errors could be correlated across the whole test rather
-        // than cancelling out — the more honest assumption for a research
-        // prototype. See chat for the alternative (optimistic, √N) option.
         var swingDistanceError: Double? = nil
         if let rmse = m.loocvSpeedRMSE {
             swingDistanceError = rmse * analysis.durationSeconds
         }
-        
-        let note = makeNote(hadGPS: hadGPS, calibrated: calibrated,
-                            trainingCount: m.trainingCount,
-                            gpsDistance: analysis.gpsDistanceMeters)
 
-        // Persist the (possibly) updated model.
-        if hadGPS {
+        let note = makeNote(hadGPS: hadGPS, hadManual: hadManual, calibrated: calibrated,
+                            trainingCount: m.trainingCount, gpsDistance: analysis.gpsDistanceMeters)
+
+        if hadGPS || hadManual {
             DispatchQueue.main.async { self.model = m }
             Self.save(m)
         }
@@ -285,9 +326,11 @@ final class WalkingModelStore: ObservableObject {
             gpsDistanceMeters: analysis.gpsDistanceMeters,
             epochCount: analysis.epochs.count,
             gpsEpochCount: gpsEpochCount,
+            manualEpochCount: manualEpochCount,
             calibrated: calibrated,
             trainingCount: m.trainingCount,
             usedGPSForTraining: hadGPS,
+            usedManualForTraining: hadManual,
             note: note)
     }
 
@@ -305,19 +348,20 @@ final class WalkingModelStore: ObservableObject {
         return (0..<minutes).map { counts[$0] > 0 ? sums[$0] / Double(counts[$0]) : 0 }
     }
 
-    private func makeNote(hadGPS: Bool, calibrated: Bool,
+    private func makeNote(hadGPS: Bool, hadManual: Bool, calibrated: Bool,
                           trainingCount: Int, gpsDistance: Double?) -> String {
+        let sourceWord = hadManual ? "manually marked distance" : "GPS"
         if calibrated {
-            return hadGPS
-                ? "Estimate refined with this test's GPS. Model trained on \(trainingCount) walking segments."
-                : "Estimate from your calibrated model (no GPS this test). Trained on \(trainingCount) segments."
+            return (hadGPS || hadManual)
+                ? "Estimate refined with this test's \(sourceWord). Model trained on \(trainingCount) walking segments."
+                : "Estimate from your calibrated model (no new labels this test). Trained on \(trainingCount) segments."
         }
-        if hadGPS {
+        if hadGPS || hadManual {
             let need = max(0, PatientWalkingModel.minExamplesToTrust - trainingCount)
-            return "Calibrating: collected \(trainingCount) GPS-labelled segments so far" +
+            return "Calibrating: collected \(trainingCount) labelled segments so far" +
                    (need > 0 ? " — about \(need) more needed before swing-only estimates are shown." : ".")
         }
-        return "No GPS fix during this test and the model isn't calibrated yet. Record a walk outdoors with a GPS fix to start calibration."
+        return "No GPS fix and no manual marks were recorded this test, and the model isn't calibrated yet."
     }
 
     // MARK: - Persistence (the patient "user information" file)
