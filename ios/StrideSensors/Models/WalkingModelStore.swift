@@ -11,6 +11,7 @@ struct WalkResult: Identifiable {
     /// Swing-based (pca-acc regression) estimates.
     let swingDistanceMeters: Double?
     let swingAvgSpeed: Double?           // m/s
+    let swingDistanceErrorMeters: Double?   // conservative ± bound, m — see chat for derivation
     let perMinuteSpeed: [Double]         // m/s, one entry per completed minute
 
     /// GPS reference for the same test, if a fix was held.
@@ -147,7 +148,7 @@ final class WalkingModelStore: ObservableObject {
             DispatchQueue.main.async {
                 self.lastResult = WalkResult(
                     date: Date(), durationSeconds: 0,
-                    swingDistanceMeters: nil, swingAvgSpeed: nil, perMinuteSpeed: [],
+                    swingDistanceMeters: nil, swingAvgSpeed: nil, swingDistanceErrorMeters: nil, perMinuteSpeed: [],
                     gpsDistanceMeters: nil, epochCount: 0, gpsEpochCount: 0,
                     calibrated: self.model.isCalibrated,
                     trainingCount: self.model.trainingCount, usedGPSForTraining: false,
@@ -255,6 +256,15 @@ final class WalkingModelStore: ObservableObject {
             }
         }
 
+        // Conservative distance-error bound: RMSE * duration, i.e. assumes
+        // per-epoch errors could be correlated across the whole test rather
+        // than cancelling out — the more honest assumption for a research
+        // prototype. See chat for the alternative (optimistic, √N) option.
+        var swingDistanceError: Double? = nil
+        if let rmse = m.loocvSpeedRMSE {
+            swingDistanceError = rmse * analysis.durationSeconds
+        }
+        
         let note = makeNote(hadGPS: hadGPS, calibrated: calibrated,
                             trainingCount: m.trainingCount,
                             gpsDistance: analysis.gpsDistanceMeters)
@@ -270,6 +280,7 @@ final class WalkingModelStore: ObservableObject {
             durationSeconds: analysis.durationSeconds,
             swingDistanceMeters: swingDistance,
             swingAvgSpeed: swingAvg,
+            swingDistanceErrorMeters: swingDistanceError,
             perMinuteSpeed: perMinute,
             gpsDistanceMeters: analysis.gpsDistanceMeters,
             epochCount: analysis.epochs.count,
