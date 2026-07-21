@@ -89,7 +89,7 @@ struct PatientWalkingModel: Codable {
     mutating func addAndRetrain(epochs: [WalkingSpeedEstimator.Epoch], date: Date = Date(),
                                 source: String? = nil) {
         let labelled = epochs.compactMap { e -> Example? in
-            guard let s = e.gpsSpeed, s.isFinite, s >= 0,
+            guard let s = e.trainingSpeed, s.isFinite, s >= 0,
                   e.features.count == WalkingSpeedEstimator.featureCount else { return nil }
             return Example(features: e.features, speed: s, date: date, source: source)
         }
