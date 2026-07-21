@@ -127,22 +127,30 @@ struct LiveSensorsView: View {
 
     // MARK: Heart-rate stream
 
+    /// Shows the live BPM plus a **simulated** ECG waveform paced to that BPM
+    /// — the watch has no ECG sensor, only optical HR, so there is no real
+    /// waveform to plot. See `SimulatedECG` for what this is (and isn't).
+    /// This previously plotted wrist accelerometer magnitude under a heart
+    /// icon, which was motion data mislabeled as a heart signal — replaced
+    /// here with an explicitly-labeled synthetic ECG instead.
     private var heartRateCard: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(store.currentHeartRate.map { String(Int($0.rounded())) } ?? "--")
-                    .font(Theme.display(28, .bold))
-                    .foregroundColor(Theme.coral)
-                Text("♥ BPM").font(Theme.display(9, .heavy)).foregroundColor(Theme.textDim)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.currentHeartRate.map { String(Int($0.rounded())) } ?? "--")
+                        .font(Theme.display(28, .bold))
+                        .foregroundColor(Theme.coral)
+                    Text("♥ BPM").font(Theme.display(9, .heavy)).foregroundColor(Theme.textDim)
+                }
+                SignalChart(
+                    sample: { SimulatedECG.window(bpm: store.currentHeartRate) },
+                    color: Theme.coral
+                )
+                .frame(height: 42)
             }
-            SignalChart(
-                sample: {
-                    // Plot recent accel magnitude as live proof of stream.
-                    store.lastN(120).map { $0.accelMagnitude }
-                },
-                color: Theme.coral
-            )
-            .frame(height: 42)
+            Text("Simulated waveform, paced to BPM — the watch has no ECG sensor")
+                .font(.system(size: 9))
+                .foregroundColor(Theme.textFaint)
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(

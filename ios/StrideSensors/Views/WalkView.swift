@@ -245,20 +245,9 @@ private struct WalkResultBody: View {
                 if result.perMinuteSpeed.contains(where: { $0 > 0 }) {
                     perMinute
                 }
-            } else {
-                // Not yet calibrated — no swing distance to show, but surface
-                // the GPS reference and calibration progress instead.
-                stat("GPS distance", meters(result.gpsDistanceMeters), Theme.mint)
             }
 
-            if let gps = result.gpsDistanceMeters, result.calibrated {
-                HStack(spacing: 6) {
-                    Image(systemName: "location.fill").font(.system(size: 10))
-                    Text("GPS reference: \(String(format: "%.0f m", gps))")
-                        .font(Theme.mono(11))
-                }
-                .foregroundColor(Color(hex: 0xC9B6AC))
-            }
+            gpsReference
 
             Text(result.note)
                 .font(.system(size: 12))
@@ -272,9 +261,34 @@ private struct WalkResultBody: View {
         }
     }
 
-    private func stat(_ label: String, _ value: String, _ color: Color) -> some View {
+    /// GPS-based distance + how many 5-second analysis windows the walk
+    /// produced. Shown unconditionally — not just before calibration —
+    /// because it's exactly the number worth seeing on an early Finish,
+    /// where the swing model may not have had enough to say anything yet.
+    private var gpsReference: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("GPS REFERENCE")
+                .font(Theme.display(9, .heavy)).foregroundColor(Color(hex: 0x9A8478))
+            HStack(spacing: 20) {
+                stat("GPS distance", meters(result.gpsDistanceMeters),
+                     result.calibrated ? Color(hex: 0xC9B6AC) : Theme.mint,
+                     size: result.calibrated ? 16 : 22)
+                stat("Epochs", epochsText,
+                     Color(hex: 0xC9B6AC), size: result.calibrated ? 16 : 22)
+            }
+        }
+    }
+
+    private var epochsText: String {
+        guard result.epochCount > 0 else { return "0" }
+        return result.gpsEpochCount > 0
+            ? "\(result.epochCount) (\(result.gpsEpochCount) w/ GPS)"
+            : "\(result.epochCount)"
+    }
+
+    private func stat(_ label: String, _ value: String, _ color: Color, size: CGFloat = 22) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(Theme.display(22, .bold)).foregroundColor(color)
+            Text(value).font(Theme.display(size, .bold)).foregroundColor(color)
             Text(label).font(Theme.display(10, .heavy)).foregroundColor(Color(hex: 0xC9B6AC))
         }
     }

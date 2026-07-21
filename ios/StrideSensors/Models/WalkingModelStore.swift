@@ -16,6 +16,14 @@ struct WalkResult: Identifiable {
     /// GPS reference for the same test, if a fix was held.
     let gpsDistanceMeters: Double?
 
+    /// Number of 5-second pca-acc analysis windows computed for this test
+    /// (see `WalkingSpeedEstimator.epochSeconds`), and how many of those
+    /// carried a usable GPS speed label. Useful on its own even before/without
+    /// calibration — and especially on an early Finish, where it shows
+    /// exactly how much data the walk actually produced.
+    let epochCount: Int
+    let gpsEpochCount: Int
+
     /// Calibration state at the time of this result.
     let calibrated: Bool
     let trainingCount: Int
@@ -137,7 +145,8 @@ final class WalkingModelStore: ObservableObject {
                 self.lastResult = WalkResult(
                     date: Date(), durationSeconds: 0,
                     swingDistanceMeters: nil, swingAvgSpeed: nil, perMinuteSpeed: [],
-                    gpsDistanceMeters: nil, calibrated: self.model.isCalibrated,
+                    gpsDistanceMeters: nil, epochCount: 0, gpsEpochCount: 0,
+                    calibrated: self.model.isCalibrated,
                     trainingCount: self.model.trainingCount, usedGPSForTraining: false,
                     note: "Not enough sensor data was captured to estimate speed.")
             }
@@ -221,7 +230,8 @@ final class WalkingModelStore: ObservableObject {
 
     private func analyze(_ readings: [WalkingSpeedEstimator.Reading]) -> WalkResult {
         let analysis = WalkingSpeedEstimator.analyze(readings)
-        let hadGPS = analysis.epochs.contains { $0.gpsSpeed != nil }
+        let gpsEpochCount = analysis.epochs.filter { $0.gpsSpeed != nil }.count
+        let hadGPS = gpsEpochCount > 0
 
         // Train from this test's GPS-labelled epochs, then read the model back.
         var m = model
@@ -267,6 +277,8 @@ final class WalkingModelStore: ObservableObject {
             swingAvgSpeed: swingAvg,
             perMinuteSpeed: perMinute,
             gpsDistanceMeters: analysis.gpsDistanceMeters,
+            epochCount: analysis.epochs.count,
+            gpsEpochCount: gpsEpochCount,
             calibrated: calibrated,
             trainingCount: m.trainingCount,
             usedGPSForTraining: hadGPS,
