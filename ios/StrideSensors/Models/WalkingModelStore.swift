@@ -77,9 +77,7 @@ final class WalkingModelStore: ObservableObject {
     private(set) var capturing = false
 
     private var buffer: [WalkingSpeedEstimator.Reading] = []
-    private var gravity = SIMD3<Double>(0, 0, 0)
-    private var gravityPrimed = false
-    private let gravityAlpha = 0.9        // same as SensorStore
+    private var gravityRemover = GravityRemover()
     private let lock = NSLock()
 
     // Internal (lock-protected) tracking accumulators.
@@ -101,8 +99,7 @@ final class WalkingModelStore: ObservableObject {
     func startCapture() {
         lock.lock()
         buffer.removeAll(keepingCapacity: true)
-        gravity = .zero
-        gravityPrimed = false
+        gravityRemover = GravityRemover()
         capturing = true
         trackStart = nil
         trackCurrent = nil
@@ -122,7 +119,13 @@ final class WalkingModelStore: ObservableObject {
 
     /// Stop capturing and analyse. Returns immediately; the result is published
     /// on `lastResult` (analysis runs off the main thread).
-    func stopCaptureAndAnalyze() {
+    ///
+    /// `source` labels any training examples this test produces (see
+    /// `PatientWalkingModel.Example.source`) — `WalkView`'s 6-minute walk
+    /// test and `CalibrationWalkView`'s calibration walk both drive capture
+    /// through this same method, and this is how the researcher view tells
+    /// their examples apart later.
+    func stopCaptureAndAnalyze(source: String = "6MWT") {
         lock.lock()
         capturing = false
         let readings = buffer
@@ -155,7 +158,7 @@ final class WalkingModelStore: ObservableObject {
 
         DispatchQueue.main.async { self.isAnalyzing = true }
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = self.analyze(readings)
+            let result = self.analyze(readings, source: source)
             DispatchQueue.main.async {
                 self.lastResult = result
                 self.isAnalyzing = false
@@ -173,15 +176,7 @@ final class WalkingModelStore: ObservableObject {
         lock.lock()
         guard capturing else { lock.unlock(); return }
 
-        if gravityPrimed {
-            gravity = gravityAlpha * gravity + (1 - gravityAlpha) * rawAccel
-        } else {
-            gravity = rawAccel
-            gravityPrimed = true
-        }
-        let ext = rawAccel - gravity
-        let gLen = simd_length(gravity)
-        let gDir = gLen > 1e-6 ? gravity / gLen : SIMD3<Double>(0, 0, 1)
+        let (ext, gDir) = gravityRemover.process(rawAccel)
 
         buffer.append(WalkingSpeedEstimator.Reading(
             t: timestamp, ext: ext, gravityDir: gDir, lat: latitude, long: longitude))
@@ -228,14 +223,14 @@ final class WalkingModelStore: ObservableObject {
 
     // MARK: - Analysis + training
 
-    private func analyze(_ readings: [WalkingSpeedEstimator.Reading]) -> WalkResult {
+    private func analyze(_ readings: [WalkingSpeedEstimator.Reading], source: String) -> WalkResult {
         let analysis = WalkingSpeedEstimator.analyze(readings)
         let gpsEpochCount = analysis.epochs.filter { $0.gpsSpeed != nil }.count
         let hadGPS = gpsEpochCount > 0
 
         // Train from this test's GPS-labelled epochs, then read the model back.
         var m = model
-        if hadGPS { m.addAndRetrain(epochs: analysis.epochs, date: Date()) }
+        if hadGPS { m.addAndRetrain(epochs: analysis.epochs, date: Date(), source: source) }
         let calibrated = m.isCalibrated
 
         // Predict per-epoch speed and integrate distance (only meaningful once
@@ -336,5 +331,56 @@ final class WalkingModelStore: ObservableObject {
         let fresh = PatientWalkingModel()
         model = fresh
         try? fm.removeItem(at: Self.modelURL)
+    }
+
+    // MARK: - Import (external, more-precise distance data)
+
+    /// Parses a CSV at `url` (see `TrainingDataImporter` for the required
+    /// format) and adds any resulting examples to the training buffer,
+    /// refitting the model. Runs off the main thread — CSV parsing plus
+    /// running the full pca-acc pipeline on potentially many rows is real
+    /// work — and calls `completion` back on the main thread with a summary
+    /// the UI can show directly (sessions found, examples added, any rows
+    /// or sessions that had to be skipped and why).
+    func importTrainingData(from url: URL,
+                            completion: @escaping (TrainingDataImporter.ImportResult) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = TrainingDataImporter.importCSV(url: url)
+            if !result.examples.isEmpty {
+                var m = self.model
+                m.addExamples(result.examples)
+                DispatchQueue.main.async {
+                    self.model = m
+                    Self.save(m)
+                    completion(result)
+                }
+            } else {
+                DispatchQueue.main.async { completion(result) }
+            }
+        }
+    }
+
+    // MARK: - Researcher view (inspect / delete training sessions)
+
+    /// Every training session currently in the buffer, newest first — one
+    /// entry per completed 6MWT, calibration walk, or imported session. See
+    /// `PatientWalkingModel.sessionGroups()`.
+    func sessionGroups() -> [PatientWalkingModel.SessionGroup] { model.sessionGroups() }
+
+    /// Deletes one whole session (every example belonging to it) and refits
+    /// on what remains.
+    func deleteSession(_ group: PatientWalkingModel.SessionGroup) {
+        deleteExamples(at: IndexSet(group.indices))
+    }
+
+    /// Deletes individual examples by their current index in `model.examples`
+    /// and refits on what remains. Callers should get `offsets` from a
+    /// freshly-read `model.examples`/`sessionGroups()` — indices are only
+    /// valid until the next mutation.
+    func deleteExamples(at offsets: IndexSet) {
+        var m = model
+        m.removeExamples(at: offsets)
+        model = m
+        Self.save(m)
     }
 }

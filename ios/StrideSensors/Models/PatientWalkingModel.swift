@@ -24,11 +24,39 @@ import Foundation
 /// information" called for in the project spec.
 struct PatientWalkingModel: Codable {
 
-    /// A stored training example: one epoch's features and its GPS speed label.
+    /// A stored training example: one epoch's features and its speed label.
     struct Example: Codable {
         let features: [Double]
         let speed: Double            // m/s
         let date: Date
+        /// Human-readable origin of this example, e.g. `"6MWT"`,
+        /// `"Calibration walk"`, or `"Imported: track_test.csv"`. `nil` for
+        /// examples recorded before this field existed — a plain `Optional`
+        /// stored property decodes safely from old persisted files with no
+        /// migration needed (Codable synthesis uses `decodeIfPresent` for
+        /// any `Optional` property, so a missing key just becomes `nil`
+        /// rather than throwing).
+        let source: String?
+    }
+
+    /// A logical batch of examples added together in one call — one 6MWT,
+    /// one calibration walk, or one session within an imported file. Not
+    /// stored explicitly: reconstructed by grouping `examples` on
+    /// `(date, source)`, since every batch added in a single
+    /// `addExamples`/`addAndRetrain` call already shares one `Date` (either
+    /// `Date()` at capture time, or one imported session's own timestamp)
+    /// and one `source` label. Used by the researcher view to show and
+    /// delete whole sessions instead of 3000 individual feature rows.
+    struct SessionGroup: Identifiable {
+        let date: Date
+        let source: String?
+        /// Indices into `examples` *as of when this group was computed* —
+        /// only valid until the next mutation, so callers should recompute
+        /// `sessionGroups()` fresh after any add/delete rather than caching
+        /// these across a mutation.
+        let indices: [Int]
+        var id: String { "\(date.timeIntervalSince1970)|\(source ?? "")" }
+        var count: Int { indices.count }
     }
 
     /// Standardisation + learned weights. `nil` until first successful fit.
@@ -56,19 +84,67 @@ struct PatientWalkingModel: Codable {
 
     /// Add GPS-labelled epochs from a completed test and refit. Epochs without
     /// a GPS speed are ignored for *training* (they can still be *predicted*).
-    mutating func addAndRetrain(epochs: [WalkingSpeedEstimator.Epoch], date: Date = Date()) {
+    mutating func addAndRetrain(epochs: [WalkingSpeedEstimator.Epoch], date: Date = Date(),
+                                source: String? = nil) {
         let labelled = epochs.compactMap { e -> Example? in
             guard let s = e.gpsSpeed, s.isFinite, s >= 0,
                   e.features.count == WalkingSpeedEstimator.featureCount else { return nil }
-            return Example(features: e.features, speed: s, date: date)
+            return Example(features: e.features, speed: s, date: date, source: source)
         }
-        guard !labelled.isEmpty else { return }
+        addExamples(labelled)
+    }
 
-        examples.append(contentsOf: labelled)
+    /// Add already-labelled examples and refit — the path used for imported
+    /// data, where the caller (e.g. `TrainingDataImporter`) has already
+    /// computed each example's features and speed label from an externally
+    /// supplied precise distance rather than GPS. Unlike `addAndRetrain`,
+    /// this doesn't filter by GPS speed; the caller is responsible for
+    /// having already validated `speed` is finite and non-negative.
+    mutating func addExamples(_ new: [Example]) {
+        guard !new.isEmpty else { return }
+        examples.append(contentsOf: new)
         if examples.count > Self.maxExamples {
             examples.removeFirst(examples.count - Self.maxExamples)
         }
         fit()
+    }
+
+    /// Deletes examples at the given positions in `examples` and refits on
+    /// whatever remains. If fewer than 2 examples remain, the fit is
+    /// cleared entirely (see `clearFit()`) rather than leaving stale
+    /// weights around that were partly trained on now-deleted data.
+    mutating func removeExamples(at offsets: IndexSet) {
+        examples.remove(atOffsets: offsets)
+        if examples.count >= 2 {
+            fit()
+        } else {
+            clearFit()
+        }
+    }
+
+    /// Resets the fitted model (weights, standardisation, bias, trainedAt)
+    /// without touching `examples` — used when a deletion drops the buffer
+    /// below the minimum size `fit()` needs, so the model honestly reports
+    /// "not calibrated" instead of continuing to serve predictions from
+    /// weights that included data the researcher just removed.
+    private mutating func clearFit() {
+        featureMean = []; featureStd = []; weights = []; bias = 0; trainedAt = nil
+    }
+
+    /// Groups `examples` into the batches they were added in — one 6MWT, one
+    /// calibration walk, or one session within an imported file — for the
+    /// researcher view. See `SessionGroup` for why `(date, source)` is a
+    /// reliable grouping key without storing session IDs explicitly.
+    /// Newest first.
+    func sessionGroups() -> [SessionGroup] {
+        var buckets: [String: (date: Date, source: String?, indices: [Int])] = [:]
+        for (i, e) in examples.enumerated() {
+            let key = "\(e.date.timeIntervalSince1970)|\(e.source ?? "")"
+            buckets[key, default: (e.date, e.source, [])].indices.append(i)
+        }
+        return buckets.values
+            .map { SessionGroup(date: $0.date, source: $0.source, indices: $0.indices) }
+            .sorted { $0.date > $1.date }
     }
 
     /// Fit ridge regression on the current buffer.

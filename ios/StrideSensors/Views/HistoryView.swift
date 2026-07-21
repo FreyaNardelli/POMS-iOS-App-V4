@@ -14,6 +14,7 @@ struct HistoryView: View {
     @State private var dayLog: SensorLogStore.DayLog?
     @State private var shareURL: URL?
     @State private var selectedSessionIndex: Int = 0
+    @State private var isExportingAll = false
 
     private let maxRowsShown = 1500
 
@@ -96,12 +97,40 @@ struct HistoryView: View {
                 .disabled(log.availableDays.isEmpty)
             }
 
+            exportAllButton
+
             Picker("", selection: $table) {
                 ForEach(Table.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 12)
+    }
+
+    /// Everything collected and calculated for this patient, bundled as one
+    /// .zip of CSVs — raw per-day sensor logs plus the swing-speed model's
+    /// training data, fitted weights, and a feature legend. See
+    /// `DataExportManager` for exactly what goes in it.
+    private var exportAllButton: some View {
+        Button { exportAll() } label: {
+            HStack(spacing: 8) {
+                if isExportingAll {
+                    ProgressView().tint(Theme.textPrimary)
+                } else {
+                    Image(systemName: "archivebox")
+                }
+                Text(isExportingAll ? "Preparing export…" : "Export all data (.zip)")
+                    .font(Theme.display(13, .bold))
+            }
+            .foregroundColor(Theme.textPrimary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .background(
+                RoundedRectangle(cornerRadius: 12).fill(Theme.panel)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.panelBorder, lineWidth: 1))
+            )
+        }
+        .disabled(isExportingAll)
     }
 
     // MARK: Content
@@ -274,6 +303,21 @@ struct HistoryView: View {
         guard !selectedDay.isEmpty else { return }
         log.flushNow()
         shareURL = log.fileURL(for: selectedDay)
+    }
+
+    /// Builds the full "everything" export off the main thread (it reads
+    /// every day's raw log from disk, which can take a moment on a long
+    /// history) and presents the share sheet once ready.
+    private func exportAll() {
+        guard !isExportingAll else { return }
+        isExportingAll = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let url = DataExportManager.buildFullExport()
+            DispatchQueue.main.async {
+                isExportingAll = false
+                if let url { shareURL = url }
+            }
+        }
     }
 
     // MARK: Formatting

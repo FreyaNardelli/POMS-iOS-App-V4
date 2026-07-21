@@ -23,6 +23,8 @@ struct CalibrationWalkView: View {
     @State private var countBefore = 0
     @State private var finishedRun = false
     @State private var showResetConfirm = false
+    @State private var showImportSheet = false
+    @State private var showResearcherView = false
 
     private var gpsFix: Bool { store.hasGPSFix }
     private var watchLive: Bool { store.packetsPerSecond > 0 }
@@ -76,7 +78,7 @@ struct CalibrationWalkView: View {
                 controls.padding(.horizontal, 22).padding(.top, 24)
                 outcome.padding(.horizontal, 18).padding(.top, 18)
                 guidance.padding(.horizontal, 18).padding(.top, 20)
-                resetRow.padding(.horizontal, 18).padding(.top, 22)
+                researcherTools.padding(.horizontal, 18).padding(.top, 22)
                 Spacer(minLength: 34)
             }
         }
@@ -86,7 +88,7 @@ struct CalibrationWalkView: View {
         .onDisappear {
             stopTicker()
             // Keep whatever was walked — train on it rather than discarding.
-            if walkModel.capturing { walkModel.stopCaptureAndAnalyze() }
+            if walkModel.capturing { walkModel.stopCaptureAndAnalyze(source: "Calibration walk") }
         }
         .confirmationDialog("Reset calibration?", isPresented: $showResetConfirm, titleVisibility: .visible) {
             Button("Reset calibration data", role: .destructive) { walkModel.resetModel() }
@@ -94,6 +96,8 @@ struct CalibrationWalkView: View {
         } message: {
             Text("Deletes this patient's learned walking model and all \(walkModel.model.trainingCount) training segments. Use this when handing the device to a different patient.")
         }
+        .sheet(isPresented: $showImportSheet) { ImportInstructionsView() }
+        .sheet(isPresented: $showResearcherView) { ResearcherDataView() }
     }
 
     // MARK: Header
@@ -316,18 +320,67 @@ struct CalibrationWalkView: View {
         }
     }
 
-    // MARK: Reset
+    // MARK: Researcher tools
 
-    @ViewBuilder
-    private var resetRow: some View {
-        if walkModel.model.trainingCount > 0 && !recording {
-            Button { showResetConfirm = true } label: {
-                Text("Reset calibration (new patient)")
-                    .font(Theme.display(12, .heavy))
+    /// Import + inspect/delete + reset — grouped together since they're all
+    /// advanced actions a researcher or clinician uses, not something a
+    /// patient taps day to day, unlike everything above this divider.
+    private var researcherTools: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Rectangle().fill(Color(hex: 0x5A463E)).frame(height: 1)
+                Text("RESEARCHER TOOLS")
+                    .font(Theme.display(10, .heavy)).tracking(0.5)
+                    .foregroundColor(Color(hex: 0x9A8478))
+                    .fixedSize()
+                Rectangle().fill(Color(hex: 0x5A463E)).frame(height: 1)
+            }
+
+            toolButton(icon: "square.and.arrow.down", title: "Import training data",
+                      subtitle: "Add a walk with a more precise known distance than GPS") {
+                showImportSheet = true
+            }
+            toolButton(icon: "list.bullet.rectangle", title: "Researcher view",
+                      subtitle: "View or delete recorded training sessions") {
+                showResearcherView = true
+            }
+
+            if walkModel.model.trainingCount > 0 && !recording {
+                Button { showResetConfirm = true } label: {
+                    Text("Reset calibration (new patient)")
+                        .font(Theme.display(12, .heavy))
+                        .foregroundColor(Color(hex: 0x9A8478))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    private func toolButton(icon: String, title: String, subtitle: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(Color(hex: 0xFFB98C))
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(Theme.display(14, .semibold)).foregroundColor(.white)
+                    Text(subtitle).font(.system(size: 11)).foregroundColor(Color(hex: 0xC9B6AC))
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold))
                     .foregroundColor(Color(hex: 0x9A8478))
             }
-            .frame(maxWidth: .infinity)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(hex: 0x3A2820))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color(hex: 0x5A463E), lineWidth: 1))
+            )
         }
+        .buttonStyle(.plain)
     }
 
     // MARK: Logic
@@ -336,7 +389,7 @@ struct CalibrationWalkView: View {
         if recording {
             recording = false
             stopTicker()
-            walkModel.stopCaptureAndAnalyze()
+            walkModel.stopCaptureAndAnalyze(source: "Calibration walk")
             finishedRun = true
         } else {
             countBefore = walkModel.model.trainingCount

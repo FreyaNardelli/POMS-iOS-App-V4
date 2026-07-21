@@ -80,6 +80,17 @@ enum WalkingSpeedEstimator {
     static let tdCoeffCount = 8                  // paper's 8 time-domain features
     static var featureCount: Int { tdCoeffCount + fdCoeffCount }   // 48
 
+    /// Human-readable names for each of the 48 features, in the exact order
+    /// `Epoch.features` lists them — `timeDomainFeatures` then
+    /// `frequencyDomainFeatures`, concatenated in `makeEpoch` as `td + fd`.
+    /// Used by `DataExportManager` so exported CSVs have real column headers
+    /// (`mean`, `fft_amp_03`, …) instead of `feature_1`..`feature_48`.
+    static let featureNames: [String] = {
+        let td = ["mean", "sd", "median", "mode", "meanAbs", "crossings", "sma", "energy"]
+        let fd = (0..<fdCoeffCount).map { "fft_amp_\(String(format: "%02d", $0))" }
+        return td + fd
+    }()
+
     // Minimum GPS movement within an epoch to trust it as a training label.
     static let minEpochGPSDistance: Double = 1.0   // metres
 
