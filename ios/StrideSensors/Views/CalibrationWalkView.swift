@@ -25,10 +25,22 @@ struct CalibrationWalkView: View {
     @State private var showResetConfirm = false
     @State private var showImportSheet = false
     @State private var showResearcherView = false
+    enum DistanceSource: String, CaseIterable { case gps = "GPS", manual = "Manual" }
+    @State private var distanceSource: DistanceSource = .gps
+    @State private var manualIntervalText: String = "1"
+    @State private var activeMarkInterval: Double = 1.0
+
+    private var parsedInterval: Double? {
+        guard let v = Double(manualIntervalText), v > 0 else { return nil }
+        return v
+    }
 
     private var gpsFix: Bool { store.hasGPSFix }
     private var watchLive: Bool { store.packetsPerSecond > 0 }
-    private var ready: Bool { gpsFix && watchLive }
+    private var ready: Bool {
+        guard watchLive else { return false }
+        return distanceSource == .gps ? gpsFix : parsedInterval != nil
+    }
 
     private var target: Int { PatientWalkingModel.minExamplesToTrust }
     private var progress: Double {
@@ -72,8 +84,14 @@ struct CalibrationWalkView: View {
         ScrollView {
             VStack(spacing: 0) {
                 header
+                sourcePicker.padding(.horizontal, 18).padding(.top, 12)
                 readiness.padding(.horizontal, 18).padding(.top, 14)
-                coordinatesSection.padding(.horizontal, 18).padding(.top, 12)
+                if distanceSource == .manual {
+                    manualStatus.padding(.horizontal, 18).padding(.top, 12)
+                    markButton.padding(.horizontal, 18).padding(.top, 12)
+                } else {
+                    coordinatesSection.padding(.horizontal, 18).padding(.top, 12)
+                }
                 progressRing.padding(.top, 22)
                 controls.padding(.horizontal, 22).padding(.top, 24)
                 outcome.padding(.horizontal, 18).padding(.top, 18)
@@ -88,7 +106,10 @@ struct CalibrationWalkView: View {
         .onDisappear {
             stopTicker()
             // Keep whatever was walked — train on it rather than discarding.
-            if walkModel.capturing { walkModel.stopCaptureAndAnalyze(source: "Calibration walk") }
+            if walkModel.capturing {
+                let label = distanceSource == .manual ? "Calibration walk (manual)" : "Calibration walk"
+                walkModel.stopCaptureAndAnalyze(source: label)
+            }
         }
         .confirmationDialog("Reset calibration?", isPresented: $showResetConfirm, titleVisibility: .visible) {
             Button("Reset calibration data", role: .destructive) { walkModel.resetModel() }
@@ -121,9 +142,11 @@ struct CalibrationWalkView: View {
             readyRow(ok: watchLive,
                      okText: "Watch streaming",
                      badText: "Watch not streaming")
-            readyRow(ok: gpsFix,
-                     okText: "GPS Fix Acquired",
-                     badText: "Waiting for GPS Fix")
+            if distanceSource == .gps {
+                readyRow(ok: gpsFix,
+                         okText: "GPS Fix Acquired",
+                         badText: "Waiting for GPS Fix")
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -292,6 +315,67 @@ struct CalibrationWalkView: View {
         }
     }
 
+    private var sourcePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("DISTANCE GROUND TRUTH")
+                .font(Theme.display(10, .heavy)).foregroundColor(Color(hex: 0x9A8478))
+            Picker("", selection: $distanceSource) {
+                Text("GPS").tag(DistanceSource.gps)
+                Text("Manual (tape measure)").tag(DistanceSource.manual)
+            }
+            .pickerStyle(.segmented)
+            .disabled(recording)
+
+            if distanceSource == .manual {
+                HStack(spacing: 8) {
+                    Text("Mark every").font(.system(size: 13)).foregroundColor(Color(hex: 0xC9B6AC))
+                    TextField("1", text: $manualIntervalText)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.center)
+                        .frame(width: 50)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: 0x2E1F19)))
+                        .foregroundColor(.white)
+                        .disabled(recording)
+                    Text("meters").font(.system(size: 13)).foregroundColor(Color(hex: 0xC9B6AC))
+                }
+            }
+        }
+    }
+
+    private var manualStatus: some View {
+        HStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: "%.1f m", walkModel.liveManualDistance))
+                    .font(Theme.display(22, .bold)).foregroundColor(.white)
+                Text("distance (manual)").font(.system(size: 11)).foregroundColor(Color(hex: 0xC9B6AC))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(walkModel.liveManualMarkCount)")
+                    .font(Theme.display(22, .bold)).foregroundColor(Theme.mint)
+                Text("marks").font(.system(size: 11)).foregroundColor(Color(hex: 0xC9B6AC))
+            }
+            Spacer()
+        }
+    }
+
+    private var markButton: some View {
+        Button {
+            walkModel.recordManualMark(intervalMeters: activeMarkInterval)
+        } label: {
+            VStack(spacing: 4) {
+                Text("MARK").font(Theme.display(14, .heavy))
+                Text("+\(String(format: "%g", activeMarkInterval)) m").font(Theme.mono(12))
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Theme.orange))
+        }
+        .buttonStyle(.plain)
+        .disabled(!recording)
+    }
+    
     // MARK: Guidance
 
     private var guidance: some View {
@@ -389,13 +473,15 @@ struct CalibrationWalkView: View {
         if recording {
             recording = false
             stopTicker()
-            walkModel.stopCaptureAndAnalyze(source: "Calibration walk")
+            let label = distanceSource == .manual ? "Calibration walk (manual)" : "Calibration walk"
+            walkModel.stopCaptureAndAnalyze(source: label)
             finishedRun = true
         } else {
             countBefore = walkModel.model.trainingCount
             finishedRun = false
             elapsed = 0
-            walkModel.startCapture()   // also resets live coordinate/distance tracking
+            if distanceSource == .manual { activeMarkInterval = parsedInterval ?? 1.0 }
+            walkModel.startCapture(manualMode: distanceSource == .manual)
             recording = true
             startTicker()
         }
