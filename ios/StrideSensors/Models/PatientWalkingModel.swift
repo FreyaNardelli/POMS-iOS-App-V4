@@ -41,7 +41,7 @@ struct PatientWalkingModel: Codable {
         /// ~5s, but the last epoch of a test can be shorter). `nil` for
         /// examples recorded before this field existed; falls back to
         /// `WalkingSpeedEstimator.epochSeconds` wherever it's used.
-        let duration: Double? = nil
+        var duration: Double?
     }
 
     /// A logical batch of examples added together in one call — one 6MWT,
