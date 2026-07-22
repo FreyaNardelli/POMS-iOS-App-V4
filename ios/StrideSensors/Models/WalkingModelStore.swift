@@ -2,38 +2,36 @@ import Foundation
 import Combine
 import simd
 
-/// The outcome shown after a 6-minute walk test.
+/// One epoch's ground-truth (tape-measure) speed vs. what the model would
+/// have predicted for it, using the model as it existed BEFORE this walk's
+/// own data was added — a genuine out-of-sample check, not a comparison
+/// against a model that was just trained on these same points.
+struct ValidationPoint: Identifiable {
+    let id = UUID()
+    let actual: Double      // m/s, from tape-measure marks
+    let predicted: Double   // m/s, prior model's prediction
+}
+
+/// The outcome shown after a 6-minute walk test or a calibration walk.
 struct WalkResult: Identifiable {
     let id = UUID()
     let date: Date
     let durationSeconds: Double
-
-    /// Swing-based (pca-acc regression) estimates.
     let swingDistanceMeters: Double?
-    let swingAvgSpeed: Double?           // m/s
-    let swingDistanceErrorMeters: Double?   // conservative ± bound, m — see chat for derivation
-    let perMinuteSpeed: [Double]         // m/s, one entry per completed minute
-
-    /// GPS reference for the same test, if a fix was held.
+    let swingAvgSpeed: Double?
+    let swingDistanceErrorMeters: Double?
+    let perMinuteSpeed: [Double]
     let gpsDistanceMeters: Double?
-    let manualEpochCount: Int
-    let usedManualForTraining: Bool
-
-    /// Number of 5-second pca-acc analysis windows computed for this test
-    /// (see `WalkingSpeedEstimator.epochSeconds`), and how many of those
-    /// carried a usable GPS speed label. Useful on its own even before/without
-    /// calibration — and especially on an early Finish, where it shows
-    /// exactly how much data the walk actually produced.
     let epochCount: Int
     let gpsEpochCount: Int
-
-    /// Calibration state at the time of this result.
+    let manualEpochCount: Int
+    let manualValidation: [ValidationPoint]
     let calibrated: Bool
     let trainingCount: Int
     let usedGPSForTraining: Bool
+    let usedManualForTraining: Bool
     let note: String
 
-    // Add this explicit initializer to match the call sites
     init(date: Date,
          durationSeconds: Double,
          swingDistanceMeters: Double?,
@@ -44,13 +42,13 @@ struct WalkResult: Identifiable {
          epochCount: Int,
          gpsEpochCount: Int,
          manualEpochCount: Int,
+         manualValidation: [ValidationPoint],
          calibrated: Bool,
          trainingCount: Int,
          usedGPSForTraining: Bool,
          usedManualForTraining: Bool,
          note: String)
     {
-        // id keeps its default value
         self.date = date
         self.durationSeconds = durationSeconds
         self.swingDistanceMeters = swingDistanceMeters
@@ -61,13 +59,13 @@ struct WalkResult: Identifiable {
         self.epochCount = epochCount
         self.gpsEpochCount = gpsEpochCount
         self.manualEpochCount = manualEpochCount
+        self.manualValidation = manualValidation
         self.calibrated = calibrated
         self.trainingCount = trainingCount
         self.usedGPSForTraining = usedGPSForTraining
         self.usedManualForTraining = usedManualForTraining
         self.note = note
     }
-    
 }
 
 /// A single GPS fix observed during capture, with the timestamp of the sample
@@ -221,6 +219,7 @@ func startCapture(manualMode: Bool = false) {
                     date: Date(), durationSeconds: 0,
                     swingDistanceMeters: nil, swingAvgSpeed: nil, swingDistanceErrorMeters: nil, perMinuteSpeed: [],
                     gpsDistanceMeters: nil, epochCount: 0, gpsEpochCount: 0, manualEpochCount: 0,
+                    manualValidation: [],
                     calibrated: self.model.isCalibrated,
                     trainingCount: self.model.trainingCount, usedGPSForTraining: false, usedManualForTraining: false,
                     note: "Not enough sensor data was captured to estimate speed.")
@@ -314,6 +313,18 @@ func startCapture(manualMode: Bool = false) {
         let hadGPS = gpsEpochCount > 0
         let hadManual = manualEpochCount > 0
 
+        // Out-of-sample validation: compare against `model` (the stored
+        // property) BEFORE it's reassigned below — not `m` (the local copy
+        // that's about to be trained on these same points).
+        var validation: [ValidationPoint] = []
+        if hadManual {
+            for e in analysis.epochs {
+                if let truth = e.manualSpeed, let pred = model.predictSpeed(features: e.features) {
+                    validation.append(ValidationPoint(actual: truth, predicted: pred))
+                }
+            }
+        }
+
         // Train from this test's labelled epochs, then read the model back.
         var m = model
         if hadGPS || hadManual { m.addAndRetrain(epochs: analysis.epochs, date: Date(), source: source) }
@@ -363,6 +374,7 @@ func startCapture(manualMode: Bool = false) {
             epochCount: analysis.epochs.count,
             gpsEpochCount: gpsEpochCount,
             manualEpochCount: manualEpochCount,
+            manualValidation: validation,
             calibrated: calibrated,
             trainingCount: m.trainingCount,
             usedGPSForTraining: hadGPS,
