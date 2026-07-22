@@ -81,6 +81,24 @@ struct PatientWalkingModel: Codable {
     static let maxExamples = 3000                // memory cap on the buffer
     static let minExamplesToTrust = 30           // below this → "calibrating"
 
+    // Tunables for inverse-variance weighting between label sources. Not
+    // empirically calibrated — see chat. preciseWeight/gpsWeight should
+    // roughly equal (gpsError/preciseError)². The researcher view's
+    // "measured vs. predicted" scatter is the tool to check whether this
+    // ratio looks right in practice — these two lines are what to adjust.
+    static let gpsWeight: Double = 1.0
+    static let preciseWeight: Double = 16.0   // manual tape-measure / imported precise distance
+
+    /// How much to trust an example's speed label, based on where it came
+    /// from. Matches the exact `source` strings set at each collection
+    /// point: "6MWT" and plain "Calibration walk" are GPS-derived;
+    /// "Calibration walk (manual)" and "Imported: ..." are precise.
+    static func precisionWeight(for source: String?) -> Double {
+        guard let source else { return gpsWeight }
+        if source.contains("(manual)") || source.contains("Imported:") { return preciseWeight }
+        return gpsWeight
+    }
+
     var isCalibrated: Bool {
         trainedAt != nil && examples.count >= Self.minExamplesToTrust && !weights.isEmpty
     }
@@ -167,7 +185,7 @@ struct PatientWalkingModel: Codable {
     }
 
     /// Fit ridge regression on the current buffer.
-/// Fit ridge regression on the current buffer.
+    /// Fit ridge regression on the current buffer.
     mutating func fit() {
         let d = WalkingSpeedEstimator.featureCount
         let rows = examples.filter { $0.features.count == d }
@@ -182,8 +200,15 @@ struct PatientWalkingModel: Codable {
         for r in rows { for j in 0..<d { let dv = r.features[j] - mean[j]; std[j] += dv * dv } }
         for j in 0..<d { std[j] = max((std[j] / n).squareRoot(), 1e-8) }
 
-        // Build standardised design matrix X and centred targets y.
-        let yMean = rows.reduce(0) { $0 + $1.speed } / n
+        // Per-example weights — precise sources count for more. See
+        // precisionWeight(for:) above.
+        let exampleWeights = rows.map { Self.precisionWeight(for: $0.source) }
+        let totalWeight = exampleWeights.reduce(0, +)
+
+        // Build standardised design matrix X and centred targets y. yMean is
+        // the WEIGHTED mean — centering on the plain mean would silently
+        // bias the fitted intercept once rows carry different weights.
+        let yMean = zip(rows, exampleWeights).reduce(0.0) { $0 + $1.0.speed * $1.1 } / totalWeight
         var X = [[Double]](repeating: [Double](repeating: 0, count: d), count: rows.count)
         var y = [Double](repeating: 0, count: rows.count)
         for (i, r) in rows.enumerated() {
@@ -191,16 +216,17 @@ struct PatientWalkingModel: Codable {
             y[i] = r.speed - yMean
         }
 
-        // Normal equations: (XᵀX + λI) w = Xᵀy.
+        // Weighted normal equations: (XᵀWX + λI) w = XᵀWy.
         var xtx = [[Double]](repeating: [Double](repeating: 0, count: d), count: d)
         var xty = [Double](repeating: 0, count: d)
         for i in 0..<rows.count {
             let xi = X[i]
+            let wi = exampleWeights[i]
             for a in 0..<d {
                 let xia = xi[a]
                 if xia == 0 { continue }
-                xty[a] += xia * y[i]
-                for b in a..<d { xtx[a][b] += xia * xi[b] }
+                xty[a] += wi * xia * y[i]
+                for b in a..<d { xtx[a][b] += wi * xia * xi[b] }
             }
         }
         // Mirror upper→lower triangle and add ridge term.
