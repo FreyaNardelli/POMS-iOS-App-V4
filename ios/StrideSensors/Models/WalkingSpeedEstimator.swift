@@ -5,6 +5,7 @@ import simd
 ///
 ///   Zihajehzadeh & Park (2016), "Regression Model-Based Walking Speed
 ///   Estimation Using Wrist-Worn Inertial Sensor", PLoS ONE 11(10):e0165211.
+///   https://pmc.ncbi.nlm.nih.gov/articles/PMC5072584/
 ///
 /// The paper's core idea is the **pca-acc** variable: gravity is removed from
 /// the wrist accelerometer to get *external* (linear) acceleration, and PCA is
@@ -23,7 +24,7 @@ import simd
 ///  • Regression maps features → speed; distance is the speed integrated over
 ///    the test. See `PatientWalkingModel`.
 ///
-/// ── Where this DEPARTS from the paper (and why) ─────────────────────────────
+/// ── What DEPARTS from the paper (and why) ─────────────────────────────
 ///  1. **No magnetometer.** The watch packet carries accel + gyro only, so the
 ///     paper's Kalman AHRS (accel+gyro+mag) can't be reproduced. We instead take
 ///     the gravity direction from a low-pass of raw accel. This costs us *yaw*
@@ -47,8 +48,8 @@ extension WalkingSpeedEstimator {
     /// One manually-tapped distance mark: cumulative distance at a known
     /// instant, from a person tapping a "Mark" button each time they
     /// physically pass a pre-measured point (e.g. every 1m of taped-down
-    /// floor markings). An alternative, potentially higher-precision ground
-    /// truth than GPS.
+    /// floor markings). An alternative, higher-precision ground truth
+    /// than GPS.
     struct ManualMark {
         let t: Double                    // seconds — SAME clock as Reading.t
         let cumulativeDistance: Double   // metres, running total as of this tap
