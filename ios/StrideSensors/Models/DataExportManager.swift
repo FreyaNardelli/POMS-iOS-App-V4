@@ -71,6 +71,23 @@ enum DataExportManager {
         }
     }
 
+    /// Exports just one calibration/6MWT session's training examples as a
+    /// single CSV — quick access from the results screen, without pulling
+    /// the full "everything" export. Returns nil if there's nothing to export.
+    static func buildSessionExport(examples: [PatientWalkingModel.Example], sessionLabel: String) -> URL? {
+        guard !examples.isEmpty else { return nil }
+        guard let data = trainingExamplesCSV(examples).data(using: .utf8) else { return nil }
+        let safeLabel = sessionLabel.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("training_data_\(safeLabel)_\(filenameFmt.string(from: Date())).csv")
+        do {
+            try data.write(to: outURL, options: .atomic)
+            return outURL
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - CSV builders
 
     private static func csvEscape(_ s: String) -> String {
@@ -113,10 +130,11 @@ enum DataExportManager {
         """
     }
 
-    private static func trainingExamplesCSV() -> String {
+    private static func trainingExamplesCSV(_ examples: [PatientWalkingModel.Example]? = nil) -> String {
+        let rows = examples ?? WalkingModelStore.shared.model.examples
         let names = WalkingSpeedEstimator.featureNames
         var out = (["index", "date", "speed_mps"] + names).joined(separator: ",") + "\n"
-        for (i, e) in WalkingModelStore.shared.model.examples.enumerated() {
+        for (i, e) in rows.enumerated() {
             var fields = [String(i + 1), dateFmt.string(from: e.date), String(format: "%.4f", e.speed)]
             fields.append(contentsOf: e.features.map { String(format: "%.6f", $0) })
             out += fields.joined(separator: ",") + "\n"
