@@ -248,7 +248,7 @@ enum TrainingDataImporter {
             let sessionDate = plausibleDate(fromEpochSeconds: sorted.first!.t) ?? Date()
             let source = "Imported: \(filenameLabel) · \(sid)"
             let newExamples = analysis.epochs.map {
-                PatientWalkingModel.Example(features: $0.features, speed: speed, date: sessionDate, source: source)
+                PatientWalkingModel.Example(features: $0.features, speed: speed, date: sessionDate, source: source, duration: $0.duration)
             }
             result.examples.append(contentsOf: newExamples)
             result.examplesAdded += newExamples.count
