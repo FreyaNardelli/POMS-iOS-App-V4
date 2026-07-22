@@ -26,6 +26,7 @@ struct CalibrationWalkView: View {
     @State private var showImportSheet = false
     @State private var showResearcherView = false
     enum DistanceSource: String, CaseIterable { case gps = "GPS", manual = "Manual" }
+    @State private var exportSessionURL: URL?
     @State private var distanceSource: DistanceSource = .gps
     @State private var manualIntervalText: String = "1"
     @State private var activeMarkInterval: Double = 1.0
@@ -95,6 +96,8 @@ struct CalibrationWalkView: View {
                 progressRing.padding(.top, 22)
                 controls.padding(.horizontal, 22).padding(.top, 24)
                 outcome.padding(.horizontal, 18).padding(.top, 18)
+                postWalkActions.padding(.horizontal, 18).padding(.top, 10)
+                validationSection.padding(.horizontal, 18).padding(.top, 14)
                 guidance.padding(.horizontal, 18).padding(.top, 20)
                 researcherTools.padding(.horizontal, 18).padding(.top, 22)
                 Spacer(minLength: 34)
@@ -119,6 +122,9 @@ struct CalibrationWalkView: View {
         }
         .sheet(isPresented: $showImportSheet) { ImportInstructionsView() }
         .sheet(isPresented: $showResearcherView) { ResearcherDataView() }
+        .sheet(isPresented: Binding(get: { exportSessionURL != nil }, set: { if !$0 { exportSessionURL = nil } })) {
+            if let url = exportSessionURL { ShareSheet(items: [url]) }
+        }
     }
 
     // MARK: Header
@@ -270,8 +276,57 @@ struct CalibrationWalkView: View {
     }
 
     // MARK: Outcome of the run just completed
+    
+    @ViewBuilder
+    private var postWalkActions: some View {
+        if finishedRun, addedThisSession > 0 {
+            Button {
+                let newExamples = Array(walkModel.model.examples.suffix(addedThisSession))
+                let label = distanceSource == .manual ? "manual" : "gps"
+                exportSessionURL = DataExportManager.buildSessionExport(examples: newExamples, sessionLabel: label)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Export training data from this walk")
+                }
+                .font(Theme.display(13, .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity).padding(12)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(hex: 0x3B6FC4)))
+            }
+            .buttonStyle(.plain)
+        }
+    }
 
     @ViewBuilder
+    private var validationSection: some View {
+        if distanceSource == .manual, finishedRun, let r = walkModel.lastResult {
+            if r.manualValidation.isEmpty {
+                if addedThisSession > 0 {
+                    Text("No prior model to validate against yet — this walk helps train the very first version.")
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0x9A8478))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("MEASURED VS. PREDICTED (prior model)")
+                        .font(Theme.display(10, .heavy)).tracking(0.5)
+                        .foregroundColor(Color(hex: 0xFFB98C))
+                    Text("Each point is one 5-second segment from this walk: x = what the tape measure says, y = what the model (as it existed before this walk) predicted. Points on the dashed line would be a perfect prediction.")
+                        .font(.system(size: 11)).foregroundColor(Color(hex: 0xC9B6AC))
+                        .fixedSize(horizontal: false, vertical: true)
+                    ValidationScatterView(points: r.manualValidation)
+                }
+            }
+        }
+    }
+
+    private var addedThisSession: Int {
+        guard let r = walkModel.lastResult else { return 0 }
+        return max(0, r.trainingCount - countBefore)
+    }
+    
+    @ViewBuilder    
     private var outcome: some View {
         if walkModel.isAnalyzing {
             HStack(spacing: 10) {
@@ -280,7 +335,7 @@ struct CalibrationWalkView: View {
                     .font(Theme.display(13, .heavy)).foregroundColor(Color(hex: 0xC9B6AC))
             }
         } else if finishedRun, let r = walkModel.lastResult {
-            let added = max(0, r.trainingCount - countBefore)
+            let added = addedThisSession
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Image(systemName: added > 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -500,4 +555,58 @@ struct CalibrationWalkView: View {
     }
 
     private func stopTicker() { ticker?.invalidate(); ticker = nil }
+}
+
+
+/// Measured (tape-measure) vs. predicted speed for one manual calibration
+/// walk. See `WalkingModelStore.analyze` — predictions use the model as of
+/// BEFORE this walk's own data was added (out-of-sample), not the freshly
+/// retrained one.
+private struct ValidationScatterView: View {
+    let points: [ValidationPoint]
+
+    private var bounds: (lo: Double, hi: Double) {
+        let all = points.flatMap { [$0.actual, $0.predicted] }
+        guard let lo = all.min(), let hi = all.max(), hi > lo else { return (0, 1) }
+        let pad = (hi - lo) * 0.1
+        return (max(0, lo - pad), hi + pad)
+    }
+
+    private var mae: Double {
+        guard !points.isEmpty else { return 0 }
+        return points.reduce(0) { $0 + abs($1.actual - $1.predicted) } / Double(points.count)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { geo in
+                let b = bounds
+                let span = max(b.hi - b.lo, 0.001)
+                ZStack {
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: geo.size.height))
+                        p.addLine(to: CGPoint(x: geo.size.width, y: 0))
+                    }
+                    .stroke(Color(hex: 0x9A8478), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                    ForEach(points) { pt in
+                        let x = CGFloat((pt.actual - b.lo) / span) * geo.size.width
+                        let y = geo.size.height - CGFloat((pt.predicted - b.lo) / span) * geo.size.height
+                        Circle()
+                            .fill(Theme.orange.opacity(0.85))
+                            .frame(width: 7, height: 7)
+                            .position(x: x, y: y)
+                    }
+                }
+            }
+            .frame(height: 160)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(hex: 0x2E1F19)))
+
+            HStack {
+                Text("x = measured, y = predicted").font(.system(size: 10)).foregroundColor(Color(hex: 0x9A8478))
+                Spacer()
+                Text("MAE \(String(format: "%.2f", mae)) m/s").font(Theme.mono(11)).foregroundColor(Color(hex: 0xC9B6AC))
+            }
+        }
+    }
 }
