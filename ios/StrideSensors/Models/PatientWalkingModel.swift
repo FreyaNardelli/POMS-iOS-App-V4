@@ -37,6 +37,11 @@ struct PatientWalkingModel: Codable {
         /// any `Optional` property, so a missing key just becomes `nil`
         /// rather than throwing).
         let source: String?
+        /// This epoch's actual duration in seconds (epochs are usually
+        /// ~5s, but the last epoch of a test can be shorter). `nil` for
+        /// examples recorded before this field existed; falls back to
+        /// `WalkingSpeedEstimator.epochSeconds` wherever it's used.
+        let duration: Double? = nil
     }
 
     /// A logical batch of examples added together in one call — one 6MWT,
@@ -91,7 +96,7 @@ struct PatientWalkingModel: Codable {
         let labelled = epochs.compactMap { e -> Example? in
             guard let s = e.trainingSpeed, s.isFinite, s >= 0,
                   e.features.count == WalkingSpeedEstimator.featureCount else { return nil }
-            return Example(features: e.features, speed: s, date: date, source: source)
+            return Example(features: e.features, speed: s, date: date, source: source, duration: e.duration)
         }
         addExamples(labelled)
     }
@@ -147,6 +152,18 @@ struct PatientWalkingModel: Codable {
         return buckets.values
             .map { SessionGroup(date: $0.date, source: $0.source, indices: $0.indices) }
             .sorted { $0.date > $1.date }
+    }
+
+    /// Total distance covered by a session, in metres — sum of each
+    /// example's speed × duration. Falls back to
+    /// `WalkingSpeedEstimator.epochSeconds` for examples recorded before
+    /// `Example.duration` existed.
+    func distanceCovered(by group: SessionGroup) -> Double {
+        group.indices.reduce(0.0) { total, idx in
+            guard idx < examples.count else { return total }
+            let e = examples[idx]
+            return total + e.speed * (e.duration ?? WalkingSpeedEstimator.epochSeconds)
+        }
     }
 
     /// Fit ridge regression on the current buffer.
