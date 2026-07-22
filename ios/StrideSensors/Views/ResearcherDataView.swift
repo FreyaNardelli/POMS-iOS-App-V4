@@ -108,6 +108,8 @@ struct ResearcherDataView: View {
                          : String(format: "%.2f–%.2f m/s", lo, hi))
                         .font(Theme.mono(11)).foregroundColor(faintText)
                 }
+                Text(String(format: "%.0f m traveled", walkModel.model.distanceCovered(by: group)))
+                    .font(Theme.mono(11)).foregroundColor(faintText)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 4) {
