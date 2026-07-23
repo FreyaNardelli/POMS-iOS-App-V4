@@ -68,6 +68,26 @@ struct ResearcherDataView: View {
         .padding(.horizontal, 16).padding(.vertical, 12)
     }
 
+    @ViewBuilder
+    private var aggregateValidation: some View {
+        let points = walkModel.model.allValidationPoints()
+        if !points.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("ALL DATA VS. CURRENT MODEL")
+                    .font(Theme.display(10, .heavy)).tracking(0.5).foregroundColor(faintText)
+                Text("Every recorded segment, measured speed vs. what the model as currently trained predicts for it.")
+                    .font(.system(size: 11)).foregroundColor(dimText)
+                    .fixedSize(horizontal: false, vertical: true)
+                ValidationScatterView(points: points)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(cardFill)
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(cardBorder, lineWidth: 1))
+            )
+        }
+    }
+
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value).font(Theme.display(20, .bold)).foregroundColor(.white)
@@ -78,6 +98,7 @@ struct ResearcherDataView: View {
     private var list: some View {
         ScrollView {
             VStack(spacing: 0) {
+                aggregateValidation.padding(.horizontal, 16).padding(.top, 14)
                 summary
                 LazyVStack(spacing: 10) {
                     ForEach(groups) { group in
@@ -180,8 +201,31 @@ private struct SessionDetailView: View {
         walkModel.model.sessionGroups().first { $0.id == group.id }?.indices ?? []
     }
 
+    private var validationPoints: [ValidationPoint] {
+        currentIndices.compactMap { idx -> ValidationPoint? in
+            guard idx < walkModel.model.examples.count else { return nil }
+            let e = walkModel.model.examples[idx]
+            return walkModel.model.predictSpeed(features: e.features)
+                .map { ValidationPoint(actual: e.speed, predicted: $0) }
+        }
+    }
+
     var body: some View {
         List {
+            if !validationPoints.isEmpty {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("THIS SESSION VS. CURRENT MODEL")
+                            .font(Theme.display(10, .heavy)).tracking(0.5).foregroundColor(faintText)
+                        Text("Measured speed vs. what the model as currently trained predicts.")
+                            .font(.system(size: 11)).foregroundColor(dimText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ValidationScatterView(points: validationPoints)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+                }
+            }
             Section {
                 ForEach(currentIndices, id: \.self) { idx in
                     if idx < walkModel.model.examples.count {
