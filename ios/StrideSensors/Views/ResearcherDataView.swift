@@ -13,6 +13,7 @@ struct ResearcherDataView: View {
     @ObservedObject private var walkModel = WalkingModelStore.shared
 
     @State private var confirmDeleteSession: PatientWalkingModel.SessionGroup?
+    @State private var exportAllURL: URL?
 
     private let cardFill = Color(hex: 0x3A2820)
     private let cardBorder = Color(hex: 0x5A463E)
@@ -55,6 +56,9 @@ struct ResearcherDataView: View {
             }
             Button("Cancel", role: .cancel) { confirmDeleteSession = nil }
         }
+        .sheet(isPresented: Binding(get: { exportAllURL != nil }, set: { if !$0 { exportAllURL = nil } })) {
+            if let url = exportAllURL { ShareSheet(items: [url]) }
+        }
     }
 
     // MARK: Summary + list
@@ -66,26 +70,6 @@ struct ResearcherDataView: View {
             stat(walkModel.model.isCalibrated ? "Yes" : "No", "calibrated")
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
-    }
-
-    @ViewBuilder
-    private var aggregateValidation: some View {
-        let points = walkModel.model.allValidationPoints()
-        if !points.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("ALL DATA VS. CURRENT MODEL")
-                    .font(Theme.display(10, .heavy)).tracking(0.5).foregroundColor(faintText)
-                Text("Every recorded segment, measured speed vs. what the model as currently trained predicts for it.")
-                    .font(.system(size: 11)).foregroundColor(dimText)
-                    .fixedSize(horizontal: false, vertical: true)
-                ValidationScatterView(points: points)
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(cardFill)
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(cardBorder, lineWidth: 1))
-            )
-        }
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
@@ -110,9 +94,51 @@ struct ResearcherDataView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 16).padding(.bottom, 20)
+                .padding(.horizontal, 16)
+
+                exportAllButton
+                    .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 20)
             }
         }
+    }
+
+    @ViewBuilder
+    private var aggregateValidation: some View {
+        let points = walkModel.model.allValidationPoints()
+        if !points.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("ALL DATA VS. CURRENT MODEL")
+                    .font(Theme.display(10, .heavy)).tracking(0.5).foregroundColor(faintText)
+                Text("Every recorded segment, measured speed vs. what the model as currently trained predicts for it.")
+                    .font(.system(size: 11)).foregroundColor(dimText)
+                    .fixedSize(horizontal: false, vertical: true)
+                ValidationScatterView(points: points)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(cardFill)
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(cardBorder, lineWidth: 1))
+            )
+        }
+    }
+
+    /// Every session's training examples, stacked chronologically into one
+    /// CSV, labelled GPS/Manual/Imported per row — see
+    /// `DataExportManager.buildAllSessionsCombinedCSV`.
+    private var exportAllButton: some View {
+        Button {
+            exportAllURL = DataExportManager.buildAllSessionsCombinedCSV()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "square.and.arrow.up")
+                Text("Export all sessions (combined .csv)")
+            }
+            .font(Theme.display(13, .bold))
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity).padding(12)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(hex: 0x3B6FC4)))
+        }
+        .buttonStyle(.plain)
     }
 
     private func sessionRow(_ group: PatientWalkingModel.SessionGroup) -> some View {
