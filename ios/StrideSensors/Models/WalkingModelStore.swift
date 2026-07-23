@@ -297,6 +297,19 @@ func startCapture(manualMode: Bool = false) {
     private func analyze(_ readings: [WalkingSpeedEstimator.Reading], source: String) -> WalkResult {
         var analysis = WalkingSpeedEstimator.analyze(readings)
 
+        // Re-derive each epoch's GPS speed LABEL from a ~20s window instead
+        // of its own narrow 5s span (see WalkingSpeedEstimator.
+        // gpsLabelWindowSeconds) -- reduces GPS position-error-relative-to-
+        // distance noise. Feature extraction stays on 5s epochs throughout;
+        // only the GPS ground-truth label attached to each epoch changes.
+        // Applies to both 6MWT tests and calibration walks, since both
+        // funnel through this same function.
+        analysis = WalkingSpeedEstimator.Analysis(
+            epochs: WalkingSpeedEstimator.widenGPSWindow(analysis.epochs, readings: readings),
+            gpsDistanceMeters: analysis.gpsDistanceMeters,
+            durationSeconds: analysis.durationSeconds,
+            sampleRateHz: analysis.sampleRateHz)
+
         let marksSnapshot: [WalkingSpeedEstimator.ManualMark]
         lock.lock(); marksSnapshot = manualMarks; lock.unlock()
         let usedManual = marksSnapshot.count >= 2
