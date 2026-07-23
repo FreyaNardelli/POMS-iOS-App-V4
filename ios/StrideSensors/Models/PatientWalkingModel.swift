@@ -184,31 +184,73 @@ struct PatientWalkingModel: Codable {
         }
     }
 
+    /// Every example vs. what the model (as CURRENTLY trained, including
+    /// everything) would predict for it — the full "how well does the
+    /// current model fit everything it's ever seen" picture.
+    func allValidationPoints() -> [ValidationPoint] {
+        examples.compactMap { e in
+            predictSpeed(features: e.features).map { ValidationPoint(actual: e.speed, predicted: $0) }
+        }
+    }
+
+    /// One session's examples vs. what the CURRENT model predicts for them
+    /// — an in-sample look, useful for spotting outliers after the fact.
+    /// Note: `group.indices` are only valid as of when `group` was computed
+    /// — same staleness rule as `sessionGroups()` itself.
+    func validationPoints(for group: SessionGroup) -> [ValidationPoint] {
+        group.indices.compactMap { idx -> ValidationPoint? in
+            guard idx < examples.count else { return nil }
+            let e = examples[idx]
+            return predictSpeed(features: e.features).map { ValidationPoint(actual: e.speed, predicted: $0) }
+        }
+    }
+
     /// Fit ridge regression on the current buffer.
     /// Fit ridge regression on the current buffer.
     mutating func fit() {
         let d = WalkingSpeedEstimator.featureCount
         let rows = examples.filter { $0.features.count == d }
-        guard rows.count >= 2 else { return }
+        guard let result = Self.fitRidge(rows, featureCount: d) else { return }
 
-        // Standardise features.
+        featureMean = result.featureMean
+        featureStd = result.featureStd
+        weights = result.weights
+        bias = result.bias
+        trainedAt = Date()
+
+        let cv = Self.crossValidatedError(rows, featureCount: d)
+        loocvSpeedRMSE = cv?.rmse
+        loocvSpeedMAE = cv?.mae
+    }
+
+    /// Result of fitting ridge regression on some set of examples.
+    private struct FitResult {
+        let featureMean: [Double]
+        let featureStd: [Double]
+        let weights: [Double]
+        let bias: Double
+    }
+
+    /// Fits weighted ridge regression on exactly the given rows. Used by
+    /// BOTH the real `fit()` above and `crossValidatedError()` below, so
+    /// there is exactly one implementation of "how to fit" — this is what
+    /// closes the bug where a hand-derived cross-validation formula quietly
+    /// stopped matching what the real (weighted) fit actually does.
+    private static func fitRidge(_ rows: [Example], featureCount d: Int) -> FitResult? {
+        guard rows.count >= 2 else { return nil }
+        let n = Double(rows.count)
+
         var mean = [Double](repeating: 0, count: d)
         var std = [Double](repeating: 0, count: d)
-        let n = Double(rows.count)
         for r in rows { for j in 0..<d { mean[j] += r.features[j] } }
         for j in 0..<d { mean[j] /= n }
         for r in rows { for j in 0..<d { let dv = r.features[j] - mean[j]; std[j] += dv * dv } }
         for j in 0..<d { std[j] = max((std[j] / n).squareRoot(), 1e-8) }
 
-        // Per-example weights — precise sources count for more. See
-        // precisionWeight(for:) above.
         let exampleWeights = rows.map { Self.precisionWeight(for: $0.source) }
         let totalWeight = exampleWeights.reduce(0, +)
-
-        // Build standardised design matrix X and centred targets y. yMean is
-        // the WEIGHTED mean — centering on the plain mean would silently
-        // bias the fitted intercept once rows carry different weights.
         let yMean = zip(rows, exampleWeights).reduce(0.0) { $0 + $1.0.speed * $1.1 } / totalWeight
+
         var X = [[Double]](repeating: [Double](repeating: 0, count: d), count: rows.count)
         var y = [Double](repeating: 0, count: rows.count)
         for (i, r) in rows.enumerated() {
@@ -216,7 +258,6 @@ struct PatientWalkingModel: Codable {
             y[i] = r.speed - yMean
         }
 
-        // Weighted normal equations: (XᵀWX + λI) w = XᵀWy.
         var xtx = [[Double]](repeating: [Double](repeating: 0, count: d), count: d)
         var xty = [Double](repeating: 0, count: d)
         for i in 0..<rows.count {
@@ -229,39 +270,55 @@ struct PatientWalkingModel: Codable {
                 for b in a..<d { xtx[a][b] += wi * xia * xi[b] }
             }
         }
-        // Mirror upper→lower triangle and add ridge term.
         for a in 0..<d {
             for b in a..<d { xtx[b][a] = xtx[a][b] }
             xtx[a][a] += Self.ridgeLambda
         }
 
-        guard let L = LinearAlgebra.cholesky(xtx) else { return }
-        let w = LinearAlgebra.solveWithCholesky(L, xty)
+        guard let w = LinearAlgebra.solveSPD(xtx, xty) else { return nil }
+        return FitResult(featureMean: mean, featureStd: std, weights: w, bias: yMean)
+    }
 
-        featureMean = mean
-        featureStd = std
-        weights = w
-        bias = yMean
-        trainedAt = Date()
-
-        // Leave-one-out cross-validated error via the ridge hat-matrix
-        // shortcut: e_i^loo = e_i / (1 - H_ii). Reuses L from the fit above,
-        // so this is O(n·d²) rather than O(n·d³) from refitting n times.
-        // NOTE: not numerically re-validated after this edit (see chat) --
-        // worth a sanity check, especially near n ≈ d (48 features).
-        var looResiduals = [Double](repeating: 0, count: rows.count)
-        for i in 0..<rows.count {
-            let xi = X[i]
-            let v = LinearAlgebra.solveWithCholesky(L, xi)      // v = (XᵀX+λI)⁻¹xi
-            var hii = 0.0
-            for j in 0..<d { hii += xi[j] * v[j] }
-            let yhat = yMean + zip(xi, w).reduce(0) { $0 + $1.0 * $1.1 }
-            let resid = rows[i].speed - yhat
-            let denom = max(1 - hii, 1e-6)   // guards a near-leverage-1 row
-            looResiduals[i] = resid / denom
+    private static func predict(_ fr: FitResult, features: [Double]) -> Double? {
+        guard fr.weights.count == features.count else { return nil }
+        var acc = fr.bias
+        for j in 0..<fr.weights.count {
+            let z = (features[j] - fr.featureMean[j]) / fr.featureStd[j]
+            acc += fr.weights[j] * z
         }
-        loocvSpeedRMSE = (looResiduals.reduce(0) { $0 + $1 * $1 } / Double(looResiduals.count)).squareRoot()
-        loocvSpeedMAE = looResiduals.reduce(0) { $0 + abs($1) } / Double(looResiduals.count)
+        return max(0, acc)
+    }
+
+    /// K-fold cross-validated speed error (m/s), via real refits on held-out
+    /// folds — see the top of this file section in chat for why this
+    /// replaced a closed-form leverage formula. True leave-one-out (k = n)
+    /// when the buffer is small enough for that to be cheap (≤60 examples);
+    /// a fixed 10-fold split above that, so cost stays bounded regardless
+    /// of buffer size.
+    private static func crossValidatedError(_ rows: [Example], featureCount d: Int) -> (rmse: Double, mae: Double)? {
+        guard rows.count >= 4 else { return nil }
+
+        let k = rows.count <= 60 ? rows.count : 10
+        var foldOf = [Int](repeating: 0, count: rows.count)
+        for i in 0..<rows.count { foldOf[i] = i % k }
+
+        var residuals: [Double] = []
+        residuals.reserveCapacity(rows.count)
+
+        for fold in 0..<k {
+            let trainRows = rows.enumerated().filter { foldOf[$0.offset] != fold }.map { $0.element }
+            let testRows = rows.enumerated().filter { foldOf[$0.offset] == fold }.map { $0.element }
+            guard let fr = fitRidge(trainRows, featureCount: d) else { continue }
+            for r in testRows {
+                guard let pred = predict(fr, features: r.features) else { continue }
+                residuals.append(r.speed - pred)
+            }
+        }
+
+        guard !residuals.isEmpty else { return nil }
+        let rmse = (residuals.reduce(0) { $0 + $1 * $1 } / Double(residuals.count)).squareRoot()
+        let mae = residuals.reduce(0) { $0 + abs($1) } / Double(residuals.count)
+        return (rmse, mae)
     }
 
     // MARK: - Prediction
