@@ -88,6 +88,51 @@ enum DataExportManager {
         }
     }
 
+    /// Exports EVERY training session as one combined CSV — shown at the
+    /// bottom of the Researcher View's session list. Rows are sorted
+    /// chronologically by date; since every example within one session
+    /// shares that session's exact date, a plain chronological sort
+    /// automatically keeps each session's rows contiguous with no separate
+    /// grouping pass needed. A `# ---- session ----` comment line is still
+    /// inserted before each session purely for human readability when the
+    /// file is opened directly.
+    ///
+    /// Columns beyond `trainingExamplesCSV`'s: `session_source` (the raw
+    /// origin string) and `ground_truth_type` ("GPS" / "Manual" / "Imported
+    /// (precise)", via `PatientWalkingModel.groundTruthLabel(for:)`).
+    static func buildAllSessionsCombinedCSV() -> URL? {
+        let examples = WalkingModelStore.shared.model.examples
+        guard !examples.isEmpty else { return nil }
+
+        let sorted = examples.sorted { $0.date < $1.date }
+        let names = WalkingSpeedEstimator.featureNames
+        var out = (["session_source", "ground_truth_type", "date", "speed_mps"] + names).joined(separator: ",") + "\n"
+
+        var lastSessionKey: String? = nil
+        for e in sorted {
+            let key = "\(e.date.timeIntervalSince1970)|\(e.source ?? "")"
+            if key != lastSessionKey {
+                let label = e.source ?? "Unlabeled session"
+                out += "# ---- Session: \(csvEscape(label)) · \(dateFmt.string(from: e.date)) ----\n"
+                lastSessionKey = key
+            }
+            let type = PatientWalkingModel.groundTruthLabel(for: e.source)
+            var fields = [csvEscape(e.source ?? ""), type, dateFmt.string(from: e.date), String(format: "%.4f", e.speed)]
+            fields.append(contentsOf: e.features.map { String(format: "%.6f", $0) })
+            out += fields.joined(separator: ",") + "\n"
+        }
+
+        guard let data = out.data(using: .utf8) else { return nil }
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("all_training_sessions_\(filenameFmt.string(from: Date())).csv")
+        do {
+            try data.write(to: outURL, options: .atomic)
+            return outURL
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - CSV builders
 
     private static func csvEscape(_ s: String) -> String {
