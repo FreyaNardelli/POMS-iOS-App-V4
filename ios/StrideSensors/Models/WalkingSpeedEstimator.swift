@@ -488,18 +488,51 @@ struct Epoch {
         return R * 2 * atan2(a.squareRoot(), (1 - a).squareRoot())
     }
 
-    /// Total GPS path length over a set of readings (nil if <2 fixes).
-    static func totalGPSDistance(_ readings: [Reading]) -> Double? {
-        var last: (Double, Double)? = nil
-        var dist = 0.0
-        var fixes = 0
-        for r in readings {
-            guard let la = r.lat, let lo = r.long else { continue }
-            fixes += 1
-            if let (pla, plo) = last { dist += haversine(pla, plo, la, lo) }
-            last = (la, lo)
+    /// Total GPS distance over a set of readings — the "GPS reference"
+    /// shown to the user. Segmented net-displacement, NOT naive fix-to-fix
+    /// summation: splits the readings into `chunkSeconds`-long windows
+    /// (defaults to the same `gpsLabelWindowSeconds` used for epoch speed
+    /// labels), takes each chunk's net displacement (first fix -> last fix
+    /// within it), and sums those chunk displacements.
+    ///
+    /// Deliberately NOT a single net displacement over the WHOLE test: a
+    /// 6MWT or calibration walk often includes genuine turns (e.g. a
+    /// there-and-back shuttle course), and collapsing the whole test to one
+    /// displacement would badly undercount that — a 30m-out/30m-back course
+    /// would net to ~0m. Chunking into ~20s windows still captures each
+    /// leg's real distance while avoiding the severe GPS-jitter-driven
+    /// overestimation naive per-fix summation has (see `epochGPSSpeed`'s
+    /// doc comment for why that's biased) — a genuine reversal happening
+    /// *within* a single ~20s chunk is the one case still undercounted, a
+    /// much smaller and rarer error than the bias this replaces.
+    static func totalGPSDistance(_ readings: [Reading], chunkSeconds: Double = gpsLabelWindowSeconds) -> Double? {
+        let fixes = readings.compactMap { r -> (t: Double, lat: Double, lon: Double)? in
+            guard let la = r.lat, let lo = r.long else { return nil }
+            return (r.t, la, lo)
         }
-        return fixes >= 2 ? dist : nil
+        guard fixes.count >= 2 else { return nil }
+
+        var total = 0.0
+        var chunkStart = fixes[0].t
+        var chunk: [(t: Double, lat: Double, lon: Double)] = []
+
+        func flushChunk() {
+            if let first = chunk.first, let last = chunk.last, chunk.count >= 2 {
+                total += haversine(first.lat, first.lon, last.lat, last.lon)
+            }
+            chunk.removeAll(keepingCapacity: true)
+        }
+
+        for f in fixes {
+            if f.t - chunkStart >= chunkSeconds && !chunk.isEmpty {
+                flushChunk()
+                while f.t - chunkStart >= chunkSeconds { chunkStart += chunkSeconds }
+            }
+            chunk.append(f)
+        }
+        flushChunk()
+
+        return total
     }
 
     /// GPS speed within one epoch (m/s), or nil if GPS didn't meaningfully
