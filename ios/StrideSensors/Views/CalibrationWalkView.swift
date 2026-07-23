@@ -562,7 +562,13 @@ struct CalibrationWalkView: View {
 /// walk. See `WalkingModelStore.analyze` — predictions use the model as of
 /// BEFORE this walk's own data was added (out-of-sample), not the freshly
 /// retrained one.
-private struct ValidationScatterView: View {
+/// Measured vs. predicted speed scatter, reused for three contexts: right
+/// after a manual walk (predictions from the PRIOR model — see
+/// WalkingModelStore.analyze), a session's data vs. the CURRENT model
+/// (ResearcherDataView drill-in), and everything vs. the CURRENT model
+/// (top of ResearcherDataView). Canvas-drawn so it stays cheap even at the
+/// full training-buffer size (up to ~3000 points), not just per-session.
+struct ValidationScatterView: View {
     let points: [ValidationPoint]
 
     private var bounds: (lo: Double, hi: Double) {
@@ -579,24 +585,23 @@ private struct ValidationScatterView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            GeometryReader { geo in
+            Canvas { context, size in
                 let b = bounds
                 let span = max(b.hi - b.lo, 0.001)
-                ZStack {
-                    Path { p in
-                        p.move(to: CGPoint(x: 0, y: geo.size.height))
-                        p.addLine(to: CGPoint(x: geo.size.width, y: 0))
-                    }
-                    .stroke(Color(hex: 0x9A8478), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
-                    ForEach(points) { pt in
-                        let x = CGFloat((pt.actual - b.lo) / span) * geo.size.width
-                        let y = geo.size.height - CGFloat((pt.predicted - b.lo) / span) * geo.size.height
-                        Circle()
-                            .fill(Theme.orange.opacity(0.85))
-                            .frame(width: 7, height: 7)
-                            .position(x: x, y: y)
-                    }
+                var diag = Path()
+                diag.move(to: CGPoint(x: 0, y: size.height))
+                diag.addLine(to: CGPoint(x: size.width, y: 0))
+                context.stroke(diag, with: .color(Color(hex: 0x9A8478)),
+                               style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                let r: CGFloat = points.count > 300 ? 2.5 : 3.5
+                let dotColor = Theme.orange.opacity(points.count > 300 ? 0.5 : 0.85)
+                for pt in points {
+                    let x = CGFloat((pt.actual - b.lo) / span) * size.width
+                    let y = size.height - CGFloat((pt.predicted - b.lo) / span) * size.height
+                    context.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
+                                with: .color(dotColor))
                 }
             }
             .frame(height: 160)
@@ -605,7 +610,8 @@ private struct ValidationScatterView: View {
             HStack {
                 Text("x = measured, y = predicted").font(.system(size: 10)).foregroundColor(Color(hex: 0x9A8478))
                 Spacer()
-                Text("MAE \(String(format: "%.2f", mae)) m/s").font(Theme.mono(11)).foregroundColor(Color(hex: 0xC9B6AC))
+                Text("MAE \(String(format: "%.2f", mae)) m/s · \(points.count) pts")
+                    .font(Theme.mono(11)).foregroundColor(Color(hex: 0xC9B6AC))
             }
         }
     }
