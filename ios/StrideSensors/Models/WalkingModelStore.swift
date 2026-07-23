@@ -170,7 +170,6 @@ func startCapture(manualMode: Bool = false) {
         capturing = true
         trackStart = nil
         trackCurrent = nil
-        trackLastCoord = nil
         trackDistance = 0
         trackChunkStartTime = nil
         trackChunkStartCoord = nil
