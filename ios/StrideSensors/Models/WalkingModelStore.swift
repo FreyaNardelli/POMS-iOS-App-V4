@@ -95,11 +95,12 @@ final class WalkingModelStore: ObservableObject {
 
     // MARK: Live GPS tracking (accumulated at full packet rate)
     //
-    // Distance is summed across *every distinct* fix that arrives while
-    // capturing — not sampled on a timer — so it matches the resolution the
-    // training labels are computed at. Publishing to SwiftUI is throttled
-    // separately (see `publishInterval`) because the accumulation can run at
-    // the full IMU rate, which is far faster than any display needs.
+    // Every packet is inspected as it arrives — not sampled on a timer — but
+    // distance itself accumulates as locked-in ~20s chunks (net displacement
+    // per chunk) rather than a running sum of every fix-to-fix hop; see
+    // trackDistance's doc comment for why. Publishing to SwiftUI is
+    // throttled separately (see `publishInterval`) because inspection can
+    // run at the full IMU rate, far faster than any display needs.
     @Published private(set) var liveStartFix: LiveFix?
     @Published private(set) var liveCurrentFix: LiveFix?
     @Published private(set) var liveDistance: Double = 0
@@ -123,16 +124,40 @@ final class WalkingModelStore: ObservableObject {
     // Internal (lock-protected) tracking accumulators.
     private var trackStart: LiveFix?
     private var trackCurrent: LiveFix?
-    private var trackLastCoord: (Double, Double)?
-    private var trackDistance: Double = 0
+    // Distance is tracked as locked-in ~20s chunks (see gpsLabelWindowSeconds)
+    // plus the current still-open chunk's own net displacement, NOT raw
+    // per-fix summation -- see epochGPSSpeed's doc comment for why summing
+    // every consecutive fix-to-fix hop is severely biased by GPS jitter.
+    private var trackDistance: Double = 0             // sum of COMPLETED chunks
+    private var trackChunkStartTime: Double?
+    private var trackChunkStartCoord: (Double, Double)?
+    private var trackChunkLastCoord: (Double, Double)?
+    /// Running max of "chunk-start -> latest fix" displacement seen so far
+    /// THIS chunk. Used only for the live display (see currentLiveDistance)
+    /// so the number never visibly decreases mid-chunk from GPS noise
+    /// (a single haversine(start, latest) snapshot can legitimately dip as
+    /// new noisy fixes arrive, even while genuinely walking forward — that
+    /// looked like a bug, not "more accurate," so it's clamped here). The
+    /// LOCKED-IN total (trackDistance) still uses the true, unclamped
+    /// chunk-end displacement when a chunk closes, so the accumulated total
+    /// over a whole test stays unbiased — only the live mid-chunk display
+    /// is smoothed, not the number actually banked.
+    private var trackChunkDisplayMax: Double = 0
     private var trackFixCount: Int = 0
     private var lastPublishAt: CFTimeInterval = 0
-    private var manualMarks: [WalkingSpeedEstimator.ManualMark] = []
 
     private let fm = FileManager.default
 
     private init() {
         model = Self.load() ?? PatientWalkingModel()
+    }
+    
+    /// Locked-in distance from completed ~20s chunks, plus the current
+    /// (still-open) chunk's clamped display value — see
+    /// `trackChunkDisplayMax`'s doc comment for why it's a running max
+    /// rather than a raw snapshot. Must be called with `lock` already held.
+    private func currentLiveDistance() -> Double {
+        trackDistance + trackChunkDisplayMax
     }
 
     // MARK: - Test lifecycle (called from WalkView)
@@ -146,8 +171,11 @@ func startCapture(manualMode: Bool = false) {
         trackCurrent = nil
         trackLastCoord = nil
         trackDistance = 0
+        trackChunkStartTime = nil
+        trackChunkStartCoord = nil
+        trackChunkLastCoord = nil
+        trackChunkDisplayMax = 0
         trackFixCount = 0
-        lastPublishAt = 0
         manualMarks.removeAll(keepingCapacity: true)
         lock.unlock()
         // startCapture() is only ever called from a SwiftUI button action
@@ -203,7 +231,7 @@ func startCapture(manualMode: Bool = false) {
         // Final exact publish so the displayed values aren't left up to one
         // throttle interval stale.
         let fStart = trackStart, fCur = trackCurrent
-        let fDist = trackDistance, fCount = trackFixCount
+        let fDist = currentLiveDistance(), fCount = trackFixCount
         lock.unlock()
 
         DispatchQueue.main.async {
@@ -255,29 +283,56 @@ func startCapture(manualMode: Bool = false) {
         if buffer.count > 120_000 { buffer.removeFirst(buffer.count - 120_000) }
 
         // ── Live GPS accumulation, at whatever rate fixes actually arrive ──
-        // Every packet is inspected. Only *distinct* coordinates advance the
-        // distance: the watch streams IMU faster than its GPS updates, so
-        // consecutive packets often repeat the same fix, and summing those
-        // repeats would add nothing but would inflate the fix count.
+        // Distance locks in one ~20s chunk (gpsLabelWindowSeconds) at a
+        // time via net displacement (chunk-start fix -> latest fix in that
+        // chunk). The live DISPLAY value is the locked-in total plus a
+        // running max of the current chunk's displacement so far (see
+        // trackChunkDisplayMax) -- not a raw snapshot, so the number never
+        // visibly dips mid-chunk from GPS noise. This avoids both the
+        // severe overestimation bias of summing every fix-to-fix hop (see
+        // epochGPSSpeed's doc comment) and a live number that looks broken
+        // by occasionally ticking backward. Fix count only advances on
+        // genuinely new coordinates: the watch streams IMU faster than its
+        // GPS updates, so consecutive packets often repeat the same fix.
         var publish: (LiveFix?, LiveFix?, Double, Int)? = nil
         if let la = latitude, let lo = longitude {
             let fix = LiveFix(lat: la, long: lo,
                               time: Date(timeIntervalSince1970: timestamp))
-            let changed = trackLastCoord.map { $0.0 != la || $0.1 != lo } ?? true
-            if changed {
-                if let last = trackLastCoord {
-                    trackDistance += WalkingSpeedEstimator.haversine(last.0, last.1, la, lo)
+            let windowSeconds = WalkingSpeedEstimator.gpsLabelWindowSeconds
+
+            let isNewCoordinate = trackChunkLastCoord.map { $0.0 != la || $0.1 != lo } ?? true
+            if isNewCoordinate { trackFixCount += 1 }
+
+            if trackChunkStartTime == nil {
+                // First GPS fix of this capture: opens the first chunk.
+                trackChunkStartTime = timestamp
+                trackChunkStartCoord = (la, lo)
+                trackChunkDisplayMax = 0
+            } else if let chunkStart = trackChunkStartTime, timestamp - chunkStart >= windowSeconds {
+                // Current chunk is done: lock in its net displacement, then
+                // open the next chunk at this fix (catching up on any gap).
+                if let start = trackChunkStartCoord, let last = trackChunkLastCoord {
+                    trackDistance += WalkingSpeedEstimator.haversine(start.0, start.1, last.0, last.1)
                 }
-                trackLastCoord = (la, lo)
-                trackFixCount += 1
+                var next = chunkStart
+                while timestamp - next >= windowSeconds { next += windowSeconds }
+                trackChunkStartTime = next
+                trackChunkStartCoord = (la, lo)
+                trackChunkDisplayMax = 0
             }
+            trackChunkLastCoord = (la, lo)   // always the latest fix, whichever chunk it's in
+            if let start = trackChunkStartCoord {
+                let d = WalkingSpeedEstimator.haversine(start.0, start.1, la, lo)
+                trackChunkDisplayMax = max(trackChunkDisplayMax, d)
+            }
+
             trackCurrent = fix
             if trackStart == nil { trackStart = fix }
 
             let now = CFAbsoluteTimeGetCurrent()
             if now - lastPublishAt >= publishInterval {
                 lastPublishAt = now
-                publish = (trackStart, trackCurrent, trackDistance, trackFixCount)
+                publish = (trackStart, trackCurrent, currentLiveDistance(), trackFixCount)
             }
         }
         lock.unlock()
