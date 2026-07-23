@@ -99,6 +99,18 @@ struct PatientWalkingModel: Codable {
         return gpsWeight
     }
 
+    /// Human-readable ground-truth type for a `source` string — "GPS",
+    /// "Manual", or "Imported (precise)". Uses the exact same classification
+    /// as `precisionWeight(for:)` above (same substring checks) so a CSV
+    /// export's label column can never drift out of sync with how the model
+    /// actually weights that data.
+    static func groundTruthLabel(for source: String?) -> String {
+        guard let source else { return "GPS" }
+        if source.contains("(manual)") { return "Manual" }
+        if source.contains("Imported:") { return "Imported (precise)" }
+        return "GPS"
+    }
+
     var isCalibrated: Bool {
         trainedAt != nil && examples.count >= Self.minExamplesToTrust && !weights.isEmpty
     }
