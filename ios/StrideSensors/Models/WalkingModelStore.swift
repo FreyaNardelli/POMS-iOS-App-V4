@@ -145,6 +145,7 @@ final class WalkingModelStore: ObservableObject {
     private var trackChunkDisplayMax: Double = 0
     private var trackFixCount: Int = 0
     private var lastPublishAt: CFTimeInterval = 0
+    private var manualMarks: [WalkingSpeedEstimator.ManualMark] = []
 
     private let fm = FileManager.default
 
