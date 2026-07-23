@@ -25,8 +25,9 @@ struct CalibrationWalkView: View {
     @State private var showResetConfirm = false
     @State private var showImportSheet = false
     @State private var showResearcherView = false
-    enum DistanceSource: String, CaseIterable { case gps = "GPS", manual = "Manual" }
     @State private var exportSessionURL: URL?
+
+    enum DistanceSource: String, CaseIterable { case gps = "GPS", manual = "Manual" }
     @State private var distanceSource: DistanceSource = .gps
     @State private var manualIntervalText: String = "1"
     @State private var activeMarkInterval: Double = 1.0
@@ -221,154 +222,7 @@ struct CalibrationWalkView: View {
         }
     }
 
-    // MARK: Progress ring
-
-    private var progressRing: some View {
-        ZStack {
-            Circle().stroke(Color(hex: 0x4A362E), lineWidth: 18)
-            Circle().trim(from: 0, to: progress)
-                .stroke(walkModel.model.isCalibrated ? Theme.mint : Theme.orange,
-                        style: StrokeStyle(lineWidth: 18, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .animation(.easeOut(duration: 0.4), value: progress)
-            VStack(spacing: 3) {
-                if recording {
-                    Text("RECORDING").font(Theme.display(10, .heavy)).foregroundColor(Theme.amber)
-                    Text(elapsedText).font(Theme.display(40, .bold)).foregroundColor(.white)
-                } else {
-                    Text(walkModel.model.isCalibrated ? "CALIBRATED" : "CALIBRATION")
-                        .font(Theme.display(10, .heavy))
-                        .foregroundColor(Color(hex: 0xC9B6AC))
-                    Text("\(Int(progress * 100))%")
-                        .font(Theme.display(40, .bold)).foregroundColor(.white)
-                }
-                Text("\(walkModel.model.trainingCount) / \(target) segments")
-                    .font(Theme.mono(11)).foregroundColor(Color(hex: 0xC9B6AC))
-            }
-        }
-        .frame(width: 216, height: 216)
-    }
-
-    // MARK: Controls
-
-    private var controls: some View {
-        VStack(spacing: 10) {
-            Button { toggle() } label: {
-                Text(recording ? "Stop & save" : "Start calibration walk")
-                    .font(Theme.display(16, .semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity).padding(14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16)
-                            .fill(recording ? Theme.coralRed : (ready ? Theme.orange : Color(hex: 0x6B4F44)))
-                    )
-            }
-            .disabled(!ready && !recording)
-
-            if !ready && !recording {
-                Text("Both the watch stream and a GPS fix are needed — GPS provides the speed the model learns from.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(hex: 0x9A8478))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: Outcome of the run just completed
-    
-    @ViewBuilder
-    private var postWalkActions: some View {
-        if finishedRun, addedThisSession > 0 {
-            Button {
-                let newExamples = Array(walkModel.model.examples.suffix(addedThisSession))
-                let label = distanceSource == .manual ? "manual" : "gps"
-                exportSessionURL = DataExportManager.buildSessionExport(examples: newExamples, sessionLabel: label)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Export training data from this walk")
-                }
-                .font(Theme.display(13, .bold))
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity).padding(12)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(hex: 0x3B6FC4)))
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    @ViewBuilder
-    private var validationSection: some View {
-        if distanceSource == .manual, finishedRun, let r = walkModel.lastResult {
-            if r.manualValidation.isEmpty {
-                if addedThisSession > 0 {
-                    Text("No prior model to validate against yet — this walk helps train the very first version.")
-                        .font(.system(size: 12)).foregroundColor(Color(hex: 0x9A8478))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("MEASURED VS. PREDICTED (prior model)")
-                        .font(Theme.display(10, .heavy)).tracking(0.5)
-                        .foregroundColor(Color(hex: 0xFFB98C))
-                    Text("Each point is one 5-second segment from this walk: x = what the tape measure says, y = what the model (as it existed before this walk) predicted. Points on the dashed line would be a perfect prediction.")
-                        .font(.system(size: 11)).foregroundColor(Color(hex: 0xC9B6AC))
-                        .fixedSize(horizontal: false, vertical: true)
-                    ValidationScatterView(points: r.manualValidation)
-                }
-            }
-        }
-    }
-
-    private var addedThisSession: Int {
-        guard let r = walkModel.lastResult else { return 0 }
-        return max(0, r.trainingCount - countBefore)
-    }
-    
-    @ViewBuilder    
-    private var outcome: some View {
-        if walkModel.isAnalyzing {
-            HStack(spacing: 10) {
-                ProgressView().tint(Theme.orange)
-                Text("Processing walk…")
-                    .font(Theme.display(13, .heavy)).foregroundColor(Color(hex: 0xC9B6AC))
-            }
-        } else if finishedRun, let r = walkModel.lastResult {
-            let added = addedThisSession
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: added > 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundColor(added > 0 ? Theme.mint : Theme.amber)
-                    Text(added > 0 ? "Added \(added) training segments" : "No usable segments from that walk")
-                        .font(Theme.display(14, .bold))
-                        .foregroundColor(added > 0 ? Theme.mint : Theme.amber)
-                }
-                if added == 0 {
-                    Text("Segments need a steady GPS fix and real movement. Try walking outdoors, away from buildings.")
-                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if walkModel.model.isCalibrated {
-                    Text("This patient's model is calibrated. Swing-based speed & distance will now appear after each 6-minute walk test.")
-                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    let need = max(0, target - r.trainingCount)
-                    Text("About \(need) more segments (~\(Int(ceil(Double(need) * 5.0 / 60.0))) more minutes of walking) to finish calibrating.")
-                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color(hex: 0x3A2820))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color(hex: 0x5A463E), lineWidth: 1))
-            )
-        }
-    }
+    // MARK: Distance source (GPS vs. manually marked)
 
     private var sourcePicker: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -430,7 +284,156 @@ struct CalibrationWalkView: View {
         .buttonStyle(.plain)
         .disabled(!recording)
     }
-    
+
+    // MARK: Progress ring
+
+    private var progressRing: some View {
+        ZStack {
+            Circle().stroke(Color(hex: 0x4A362E), lineWidth: 18)
+            Circle().trim(from: 0, to: progress)
+                .stroke(walkModel.model.isCalibrated ? Theme.mint : Theme.orange,
+                        style: StrokeStyle(lineWidth: 18, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.easeOut(duration: 0.4), value: progress)
+            VStack(spacing: 3) {
+                if recording {
+                    Text("RECORDING").font(Theme.display(10, .heavy)).foregroundColor(Theme.amber)
+                    Text(elapsedText).font(Theme.display(40, .bold)).foregroundColor(.white)
+                } else {
+                    Text(walkModel.model.isCalibrated ? "CALIBRATED" : "CALIBRATION")
+                        .font(Theme.display(10, .heavy))
+                        .foregroundColor(Color(hex: 0xC9B6AC))
+                    Text("\(Int(progress * 100))%")
+                        .font(Theme.display(40, .bold)).foregroundColor(.white)
+                }
+                Text("\(walkModel.model.trainingCount) / \(target) segments")
+                    .font(Theme.mono(11)).foregroundColor(Color(hex: 0xC9B6AC))
+            }
+        }
+        .frame(width: 216, height: 216)
+    }
+
+    // MARK: Controls
+
+    private var controls: some View {
+        VStack(spacing: 10) {
+            Button { toggle() } label: {
+                Text(recording ? "Stop & save" : "Start calibration walk")
+                    .font(Theme.display(16, .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity).padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(recording ? Theme.coralRed : (ready ? Theme.orange : Color(hex: 0x6B4F44)))
+                    )
+            }
+            .disabled(!ready && !recording)
+
+            if !ready && !recording {
+                Text("Both the watch stream and a GPS fix are needed — GPS provides the speed the model learns from.")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(hex: 0x9A8478))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: Outcome of the run just completed
+
+    private var addedThisSession: Int {
+        guard let r = walkModel.lastResult else { return 0 }
+        return max(0, r.trainingCount - countBefore)
+    }
+
+    @ViewBuilder
+    private var postWalkActions: some View {
+        if finishedRun, addedThisSession > 0 {
+            Button {
+                let newExamples = Array(walkModel.model.examples.suffix(addedThisSession))
+                let label = distanceSource == .manual ? "manual" : "gps"
+                exportSessionURL = DataExportManager.buildSessionExport(examples: newExamples, sessionLabel: label)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Export training data from this walk")
+                }
+                .font(Theme.display(13, .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity).padding(12)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(hex: 0x3B6FC4)))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private var validationSection: some View {
+        if distanceSource == .manual, finishedRun, let r = walkModel.lastResult {
+            if r.manualValidation.isEmpty {
+                if addedThisSession > 0 {
+                    Text("No prior model to validate against yet — this walk helps train the very first version.")
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0x9A8478))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("MEASURED VS. PREDICTED (prior model)")
+                        .font(Theme.display(10, .heavy)).tracking(0.5)
+                        .foregroundColor(Color(hex: 0xFFB98C))
+                    Text("Each point is one 5-second segment from this walk: x = what the tape measure says, y = what the model (as it existed before this walk) predicted. Points on the dashed line would be a perfect prediction.")
+                        .font(.system(size: 11)).foregroundColor(Color(hex: 0xC9B6AC))
+                        .fixedSize(horizontal: false, vertical: true)
+                    ValidationScatterView(points: r.manualValidation)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var outcome: some View {
+        if walkModel.isAnalyzing {
+            HStack(spacing: 10) {
+                ProgressView().tint(Theme.orange)
+                Text("Processing walk…")
+                    .font(Theme.display(13, .heavy)).foregroundColor(Color(hex: 0xC9B6AC))
+            }
+        } else if finishedRun, let r = walkModel.lastResult {
+            let added = addedThisSession
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: added > 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundColor(added > 0 ? Theme.mint : Theme.amber)
+                    Text(added > 0 ? "Added \(added) training segments" : "No usable segments from that walk")
+                        .font(Theme.display(14, .bold))
+                        .foregroundColor(added > 0 ? Theme.mint : Theme.amber)
+                }
+                if added == 0 {
+                    Text("Segments need a steady GPS fix and real movement. Try walking outdoors, away from buildings.")
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if walkModel.model.isCalibrated {
+                    Text("This patient's model is calibrated. Swing-based speed & distance will now appear after each 6-minute walk test.")
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    let need = max(0, target - r.trainingCount)
+                    Text("About \(need) more segments (~\(Int(ceil(Double(need) * 5.0 / 60.0))) more minutes of walking) to finish calibrating.")
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xC9B6AC))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(hex: 0x3A2820))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color(hex: 0x5A463E), lineWidth: 1))
+            )
+        }
+    }
+
     // MARK: Guidance
 
     private var guidance: some View {
@@ -557,11 +560,6 @@ struct CalibrationWalkView: View {
     private func stopTicker() { ticker?.invalidate(); ticker = nil }
 }
 
-
-/// Measured (tape-measure) vs. predicted speed for one manual calibration
-/// walk. See `WalkingModelStore.analyze` — predictions use the model as of
-/// BEFORE this walk's own data was added (out-of-sample), not the freshly
-/// retrained one.
 /// Measured vs. predicted speed scatter, reused for three contexts: right
 /// after a manual walk (predictions from the PRIOR model — see
 /// WalkingModelStore.analyze), a session's data vs. the CURRENT model
